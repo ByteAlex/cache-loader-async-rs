@@ -16,7 +16,7 @@ pub enum CacheResult<V> {
     None,
 }
 
-pub struct CacheHandle(JoinHandle<()>);
+pub type CacheHandle = JoinHandle<()>;
 
 #[derive(Debug, Clone)]
 pub struct LoadingCache<K, V> {
@@ -35,7 +35,7 @@ impl<
         let handle = store.run(rx);
         (LoadingCache {
             tx
-        }, CacheHandle(handle))
+        }, handle)
     }
 
     pub async fn get(&self, key: K) -> Result<V, CacheLoadingError> {
