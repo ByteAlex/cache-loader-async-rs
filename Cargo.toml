@@ -1,5 +1,5 @@
 [package]
-name = "cache-loader-async"
+name = "cache_loader_async"
 version = "0.1.0"
 authors = ["Alexander Becker <abecker@bitflow.dev>", "Spencer Sharkey <spencer@sf-n.com>"]
 edition = "2018"
