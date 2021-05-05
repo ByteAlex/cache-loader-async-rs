@@ -1,8 +1,12 @@
 [package]
 name = "cache_loader_async"
+description = "A thread safe loading cache with async loader functions based on tokio"
+repository = "https://github.com/ZeroTwo-Bot/cache-loader-async-rs"
 version = "0.1.0"
 authors = ["Alexander Becker <abecker@bitflow.dev>", "Spencer Sharkey <spencer@sf-n.com>"]
 edition = "2018"
+keywords = ["cache", "async"]
+categories = ["utility"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
