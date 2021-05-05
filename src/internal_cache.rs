@@ -5,6 +5,7 @@ use tokio::task::JoinHandle;
 use crate::cache_api::{CacheResult, CacheLoadingError};
 
 pub(crate) enum CacheAction<K, V> {
+    GetIfPresent(K),
     Get(K),
     Set(K, V),
     Update(K, Box<dyn FnOnce(V) -> V + Send + 'static>),
@@ -52,28 +53,18 @@ impl<
         tokio::spawn(async move {
             loop {
                 if let Some(message) = rx.recv().await {
-                    match message.action {
-                        CacheAction::Get(key) => {
-                            let result = self.get(key);
-                            message.response.send(result).ok();
-                        }
-                        CacheAction::Set(key, value) => {
-                            let result = self.set(key, value, false);
-                            message.response.send(result).ok();
-                        }
-                        CacheAction::Update(key, update_fn) => {
-                            let result = self.update(key, update_fn);
-                            message.response.send(result).ok();
-                        }
+                    let result = match message.action {
+                        CacheAction::GetIfPresent(key) => self.get_if_present(&key),
+                        CacheAction::Get(key) => self.get(key),
+                        CacheAction::Set(key, value) => self.set(key, value, false),
+                        CacheAction::Update(key, update_fn) => self.update(key, update_fn),
+                        CacheAction::SetAndUnblock(key, value) => self.set(key, value, true),
                         CacheAction::Unblock(key) => {
                             self.unblock(key);
-                            message.response.send(CacheResult::None).ok();
+                            CacheResult::None
                         }
-                        CacheAction::SetAndUnblock(key, value) => {
-                            let result = self.set(key, value, true);
-                            message.response.send(result).ok();
-                        }
-                    }
+                    };
+                    message.response.send(result).ok();
                 }
             }
         })
@@ -117,6 +108,17 @@ impl<
             })
             .map(|value| CacheResult::Found(value))
             .unwrap_or(CacheResult::None)
+    }
+
+    fn get_if_present(&mut self, key: &K) -> CacheResult<V> {
+        if let Some(entry) = self.data.get(key) {
+            match entry {
+                CacheEntry::Loaded(data) => CacheResult::Found(data.clone()),
+                CacheEntry::Loading(_) => CacheResult::None, // todo: Are we treating Loading as present or not?
+            }
+        } else {
+            CacheResult::None
+        }
     }
 
     fn get(&mut self, key: K) -> CacheResult<V> {

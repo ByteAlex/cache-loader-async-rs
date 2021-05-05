@@ -43,6 +43,7 @@ impl<
     /// # Examples
     ///
     /// ```
+    /// async fn example() {
     ///     use cache_loader_async::cache_api::LoadingCache;
     ///     use std::collections::HashMap;
     ///     let static_db: HashMap<String, u32> =
@@ -60,6 +61,7 @@ impl<
     ///     let result = cache.get("foo".to_owned()).await.unwrap();
     ///
     ///     assert_eq!(result, 32);
+    /// }
     /// ```
     pub fn new<T, F>(loader: T) -> (LoadingCache<K, V, >, CacheHandle)
         where F: Future<Output=Option<V>> + Sized + Send + 'static,
@@ -104,6 +106,15 @@ impl<
     /// Err - Error of type CacheLoadingError
     pub async fn set(&self, key: K, value: V) -> Result<Option<V>, CacheLoadingError> {
         self.send_cache_action(CacheAction::Set(key, value)).await
+    }
+
+    pub async fn get_if_present(&self, key: K) -> Result<Option<V>, CacheLoadingError> {
+        self.send_cache_action(CacheAction::GetIfPresent(key)).await
+    }
+
+    pub async fn exists(&self, key: K) -> Result<bool, CacheLoadingError> {
+        self.get_if_present(key).await
+            .map(|result| result.is_some())
     }
 
     /// Unstable, Undocumented & Inconsistent. Don't use that just yet
