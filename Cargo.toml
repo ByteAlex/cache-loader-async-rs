@@ -6,7 +6,7 @@ version = "0.0.1"
 authors = ["Alexander Becker <bytealex@zerotwo.bot>", "Spencer Sharkey <spencer@sf-n.com>"]
 edition = "2018"
 keywords = ["cache", "async"]
-categories = ["utility"]
+categories = ["asynchronous", "caching"]
 license = "Apache-2.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
