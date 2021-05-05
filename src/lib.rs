@@ -1,5 +1,5 @@
 mod internal_cache;
-mod cache_api;
+pub mod cache_api;
 
 #[cfg(test)]
-pub mod test;
+pub(crate) mod test;
