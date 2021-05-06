@@ -70,13 +70,13 @@ impl<
     ///     assert_eq!(result, 32);
     /// }
     /// ```
-    pub fn new<T, F>(loader: T) -> (LoadingCache<K, V, >, CacheHandle)
+    pub fn new<T, F>(loader: T) -> (LoadingCache<K, V>, CacheHandle)
         where F: Future<Output=Option<V>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static {
         LoadingCache::with_backing(HashMapBacking::new(), loader)
     }
 
-    pub fn with_backing<T, F, B>(backing: B, loader: T) -> (LoadingCache<K, V, >, CacheHandle)
+    pub fn with_backing<T, F, B>(backing: B, loader: T) -> (LoadingCache<K, V>, CacheHandle)
         where F: Future<Output=Option<V>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static,
               B: CacheBacking<K, CacheEntry<V>> + Send + 'static {
