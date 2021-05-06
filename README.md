@@ -33,3 +33,36 @@ async fn main() {
 The LoadingCache will first try to look up the result in an internal HashMap and if it's
 not found and there's no load ongoing, it will fire the load request and queue any other
 get requests until the load request finishes.
+
+# Features & Cache Backings
+
+You can use a simple pre-built LRU cache from the [lru-rs crate](https://github.com/jeromefroe/lru-rs) by enabling 
+the `lru-cache` feature.
+
+To create a LoadingCache with lru cache backing use the `with_backing` method on the LoadingCache.
+
+```rust
+async fn main() {
+    let size: usize = 10;
+    let (cache, _) = LoadingCache::with_backing(LruCacheBacking::new(size), move |key: String| {
+        async move {
+            Some(key.to_lowercase())
+        }
+    });
+}
+```
+
+## Own Backing
+
+To implement an own cache backing, simply implement the public `CacheBacking` trait from the `backing` mod.
+
+```rust
+pub trait CacheBacking<K, V>
+    where K: Eq + Hash + Sized + Clone + Send,
+          V: Sized + Clone + Send {
+    fn get(&mut self, key: &K) -> Option<&V>;
+    fn set(&mut self, key: K, value: V) -> Option<V>;
+    fn remove(&mut self, key: &K) -> Option<V>;
+    fn contains_key(&self, key: &K) -> bool;
+}
+```
