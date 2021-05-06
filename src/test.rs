@@ -131,7 +131,7 @@ async fn test_update() {
     }).await.unwrap();
 
     println!("Result of updating loaded key test -> test with append _magic: {}", result);
-    // todo assert_eq!(result, "test_magic".to_owned());
+    assert_eq!(result, "test_magic".to_owned());
 
     // We test to update an loaded key which is `set` during the load time
     // Our to_lower_case cache is supposed to load the `monka` key as `monka` value
@@ -153,7 +153,7 @@ async fn test_update() {
     });
     let result = handle.await.unwrap();
     println!("Result of updating loaded key while setting key manually with append _condition: {}", result);
-    // todo assert_eq!(result, "race_condition".to_owned());
+    assert_eq!(result, "race_condition".to_owned());
 }
 #[tokio::test]
 async fn test_remove() {
@@ -197,4 +197,8 @@ async fn test_lru_backing() {
     assert_eq!(cache.get("key1".to_owned()).await.unwrap(), "value1".to_lowercase());
     assert_eq!(cache.get("key3".to_owned()).await.unwrap(), "value3".to_lowercase());
     assert_eq!(cache.get("key2".to_owned()).await.unwrap(), "key2".to_lowercase());
+
+    cache.set("remove_test".to_owned(), "delete_me".to_lowercase()).await.ok();
+    cache.remove("remove_test".to_owned()).await.ok();
+    assert_eq!(cache.get("remove_test".to_owned()).await.unwrap(), "remove_test".to_lowercase());
 }

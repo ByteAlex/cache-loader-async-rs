@@ -34,7 +34,7 @@ impl<
     K: Eq + Hash + Clone + Send + 'static,
     V: Clone + Sized + Send + 'static,
 > LoadingCache<K, V> {
-    /// Creates a new instance of a LoadingCache
+    /// Creates a new instance of a LoadingCache with the default `HashMapBacking`
     ///
     /// # Arguments
     ///
@@ -50,9 +50,9 @@ impl<
     /// # Examples
     ///
     /// ```
+    /// use cache_loader_async::cache_api::LoadingCache;
+    /// use std::collections::HashMap;
     /// async fn example() {
-    ///     use cache_loader_async::cache_api::LoadingCache;
-    ///     use std::collections::HashMap;
     ///     let static_db: HashMap<String, u32> =
     ///         vec![("foo".into(), 32), ("bar".into(), 64)]
     ///             .into_iter()
@@ -76,6 +76,47 @@ impl<
         LoadingCache::with_backing(HashMapBacking::new(), loader)
     }
 
+    /// Creates a new instance of a LoadingCache with a custom `CacheBacking`
+    ///
+    /// # Arguments
+    ///
+    /// * `backing` - The custom backing which the cache should use
+    /// * `loader` - A function which returns a Future<Output=Option<V>>
+    ///
+    /// # Return Value
+    ///
+    /// This method returns a tuple, with:
+    /// 0 - The instance of the LoadingCache
+    /// 1 - The CacheHandle which is a JoinHandle<()> and represents the task which operates
+    ///     the cache
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cache_loader_async::cache_api::LoadingCache;
+    /// use std::collections::HashMap;
+    /// use cache_loader_async::backing::HashMapBacking;
+    /// async fn example() {
+    ///     let static_db: HashMap<String, u32> =
+    ///         vec![("foo".into(), 32), ("bar".into(), 64)]
+    ///             .into_iter()
+    ///             .collect();
+    ///
+    ///     let (cache, _) = LoadingCache::with_backing(
+    ///         HashMapBacking::new(), // this is the default implementation of `new`
+    ///         move |key: String| {
+    ///             let db_clone = static_db.clone();
+    ///             async move {
+    ///                 db_clone.get(&key).cloned()
+    ///             }
+    ///         }
+    ///     );
+    ///
+    ///     let result = cache.get("foo".to_owned()).await.unwrap();
+    ///
+    ///     assert_eq!(result, 32);
+    /// }
+    /// ```
     pub fn with_backing<T, F, B>(backing: B, loader: T) -> (LoadingCache<K, V>, CacheHandle)
         where F: Future<Output=Option<V>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static,
@@ -122,20 +163,72 @@ impl<
         self.send_cache_action(CacheAction::Set(key, value)).await
     }
 
+    /// Loads the value for the specified key from the cache and returns None if not present
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key which should be loaded
+    ///
+    /// # Return Value
+    ///
+    /// Returns a Result with:
+    /// Ok - Value of type Option<V>
+    /// Err - Error of type CacheLoadingError
     pub async fn get_if_present(&self, key: K) -> Result<Option<V>, CacheLoadingError> {
         self.send_cache_action(CacheAction::GetIfPresent(key)).await
     }
 
+    /// Checks whether a specific value is mapped for the given key
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key which should be checked
+    ///
+    /// # Return Value
+    ///
+    /// Returns a Result with:
+    /// Ok - bool
+    /// Err - Error of type CacheLoadingError
     pub async fn exists(&self, key: K) -> Result<bool, CacheLoadingError> {
         self.get_if_present(key).await
             .map(|result| result.is_some())
     }
 
+    /// Removes a specific key-value mapping from the cache and returns the previous result
+    /// if there was any or None
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key which should be evicted
+    ///
+    /// # Return Value
+    ///
+    /// Returns a Result with:
+    /// Ok - Value of type Option<V>
+    /// Err - Error of type CacheLoadingError
     pub async fn remove(&self, key: K) -> Result<Option<V>, CacheLoadingError> {
         self.send_cache_action(CacheAction::Remove(key)).await
     }
 
-    /// Unstable, Undocumented & Inconsistent. Don't use that just yet
+    /// Updates a key on the cache with the given update function and returns the previous value
+    ///
+    /// If the key is not present yet, it'll be loaded using the loader function and will be
+    /// updated once this loader function completes.
+    /// In case the key was manually updated via `set` during the loader function the update will
+    /// take place on the manually updated value, so user-controlled input takes precedence over
+    /// the loader function
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key which should be updated
+    /// * `update_fn` - A `FnOnce(V) -> V` which has the current value as parameter and should
+    ///                 return the updated value
+    ///
+    /// # Return Value
+    ///
+    /// Returns a Result with:
+    /// Ok - Value of type V which is the previously mapped value
+    /// Err - Error of type CacheLoadingError
     pub async fn update<U>(&self, key: K, update_fn: U) -> Result<V, CacheLoadingError>
         where U: FnOnce(V) -> V + Send + 'static {
         self.send_cache_action(CacheAction::Update(key, Box::new(update_fn))).await
