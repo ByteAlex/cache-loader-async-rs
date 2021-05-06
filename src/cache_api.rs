@@ -2,11 +2,18 @@ use tokio::task::JoinHandle;
 use std::hash::Hash;
 use futures::Future;
 use crate::internal_cache::{CacheAction, InternalCacheStore, CacheMessage};
+use crate::backing::{CacheBacking, HashMapBacking};
 
 #[derive(Debug, Clone)]
 pub struct CacheLoadingError {
     pub reason_phrase: String,
     // todo: nested errors
+}
+
+#[derive(Debug, Clone)]
+pub enum CacheEntry<V> {
+    Loaded(V),
+    Loading(tokio::sync::broadcast::Sender<Option<V>>),
 }
 
 #[derive(Debug)]
@@ -66,8 +73,15 @@ impl<
     pub fn new<T, F>(loader: T) -> (LoadingCache<K, V, >, CacheHandle)
         where F: Future<Output=Option<V>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static {
+        LoadingCache::with_backing(HashMapBacking::new(), loader)
+    }
+
+    pub fn with_backing<T, F, B>(backing: B, loader: T) -> (LoadingCache<K, V, >, CacheHandle)
+        where F: Future<Output=Option<V>> + Sized + Send + 'static,
+              T: Fn(K) -> F + Send + 'static,
+              B: CacheBacking<K, CacheEntry<V>> + Send + 'static {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
-        let store = InternalCacheStore::new(tx.clone(), loader);
+        let store = InternalCacheStore::new(backing, tx.clone(), loader);
         let handle = store.run(rx);
         (LoadingCache {
             tx
