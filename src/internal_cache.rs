@@ -10,7 +10,6 @@ pub(crate) enum CacheAction<K, V> {
     Set(K, V),
     Update(K, Box<dyn FnOnce(V) -> V + Send + 'static>),
     Remove(K),
-    // todo type U for update function
     // Internal use
     SetAndUnblock(K, V),
     Unblock(K),
