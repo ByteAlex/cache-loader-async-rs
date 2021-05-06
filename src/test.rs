@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use crate::cache_api::LoadingCache;
 use tokio::time::Duration;
+#[cfg(feature = "lru-cache")]
+use crate::backing::LruCacheBacking;
 
 #[derive(Debug, Clone)]
 pub struct ThingOne(u8);
@@ -152,4 +154,30 @@ async fn test_update() {
     let result = handle.await.unwrap();
     println!("Result of updating loaded key while setting key manually with append _condition: {}", result);
     // todo assert_eq!(result, "race_condition".to_owned());
+}
+
+#[cfg(feature = "lru-cache")]
+#[tokio::test]
+async fn test_lru_backing() {
+    let (cache, _) = LoadingCache::with_backing(LruCacheBacking::new(2), move |key: String| {
+        async move {
+            Some(key.to_lowercase())
+        }
+    });
+
+    cache.set("key1".to_owned(), "value1".to_lowercase()).await.ok();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    cache.set("key2".to_owned(), "value2".to_lowercase()).await.ok();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // cache is full
+
+    assert_eq!(cache.get("key1".to_owned()).await.unwrap(), "value1".to_lowercase());
+
+    // we reused key1, key1 is more recent than key 2
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    cache.set("key3".to_owned(), "value3".to_lowercase()).await.ok();
+
+    assert_eq!(cache.get("key1".to_owned()).await.unwrap(), "value1".to_lowercase());
+    assert_eq!(cache.get("key3".to_owned()).await.unwrap(), "value3".to_lowercase());
+    assert_eq!(cache.get("key2".to_owned()).await.unwrap(), "key2".to_lowercase());
 }
