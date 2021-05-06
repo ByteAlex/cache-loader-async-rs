@@ -9,6 +9,7 @@ pub(crate) enum CacheAction<K, V> {
     Get(K),
     Set(K, V),
     Update(K, Box<dyn FnOnce(V) -> V + Send + 'static>),
+    Remove(K),
     // todo type U for update function
     // Internal use
     SetAndUnblock(K, V),
@@ -55,6 +56,7 @@ impl<
                         CacheAction::Get(key) => self.get(key),
                         CacheAction::Set(key, value) => self.set(key, value, false),
                         CacheAction::Update(key, update_fn) => self.update(key, update_fn),
+                        CacheAction::Remove(key) => self.remove(key),
                         CacheAction::SetAndUnblock(key, value) => self.set(key, value, true),
                         CacheAction::Unblock(key) => {
                             self.unblock(key);
@@ -76,6 +78,17 @@ impl<
         }
     }
 
+    fn remove(&mut self, key: K) -> CacheResult<V> {
+        if let Some(entry) = self.data.remove(&key) {
+            match entry {
+                CacheEntry::Loaded(data) => CacheResult::Found(data),
+                CacheEntry::Loading(_) => CacheResult::None
+            }
+        } else {
+            CacheResult::None
+        }
+    }
+
     fn update(&mut self, key: K, update_fn: Box<dyn FnOnce(V) -> V + Send + 'static>) -> CacheResult<V> {
         match self.get(key.clone()) {
             CacheResult::Found(data) => {
@@ -93,8 +106,15 @@ impl<
     }
 
     fn set(&mut self, key: K, value: V, loading_result: bool) -> CacheResult<V> {
-        if loading_result && self.data.contains_key(&key) {
-            return CacheResult::None; // abort mission, we already have an updated entry!
+        let opt_entry = self.data.get(&key);
+        if loading_result {
+            if opt_entry.is_none() {
+                return CacheResult::None; // abort mission, key was deleted via remove
+            }
+            let entry = opt_entry.unwrap(); // it's some, because we return if its none
+            if matches!(entry, CacheEntry::Loaded(_)) {
+                return CacheResult::None; // abort mission, we already have an updated entry!
+            }
         }
         self.data.set(key, CacheEntry::Loaded(value))
             .and_then(|entry| {

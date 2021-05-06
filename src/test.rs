@@ -155,6 +155,23 @@ async fn test_update() {
     println!("Result of updating loaded key while setting key manually with append _condition: {}", result);
     // todo assert_eq!(result, "race_condition".to_owned());
 }
+#[tokio::test]
+async fn test_remove() {
+    let (cache, _) = LoadingCache::new(move |key: String| {
+        async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            Some(key.to_lowercase())
+        }
+    });
+
+    cache.set("test".to_owned(), "lol".to_owned()).await.ok();
+
+    assert_eq!(cache.get("test".to_owned()).await.unwrap(), "lol".to_owned());
+
+    cache.remove("test".to_owned()).await.ok();
+
+    assert_eq!(cache.get("test".to_owned()).await.unwrap(), "test".to_owned());
+}
 
 #[cfg(feature = "lru-cache")]
 #[tokio::test]

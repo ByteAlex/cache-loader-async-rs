@@ -131,6 +131,10 @@ impl<
             .map(|result| result.is_some())
     }
 
+    pub async fn remove(&self, key: K) -> Result<Option<V>, CacheLoadingError> {
+        self.send_cache_action(CacheAction::Remove(key)).await
+    }
+
     /// Unstable, Undocumented & Inconsistent. Don't use that just yet
     pub async fn update<U>(&self, key: K, update_fn: U) -> Result<V, CacheLoadingError>
         where U: FnOnce(V) -> V + Send + 'static {
