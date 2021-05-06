@@ -68,10 +68,10 @@ impl<
     }
 
     fn unblock(&mut self, key: K) {
-        if let Some(entry) = self.data.get(key.clone()) {
+        if let Some(entry) = self.data.get(&key) {
             if let CacheEntry::Loading(waiter) = entry {
                 waiter.send(None).ok();
-                self.data.remove(key);
+                self.data.remove(&key);
             }
         }
     }
@@ -108,7 +108,7 @@ impl<
     }
 
     fn get_if_present(&mut self, key: K) -> CacheResult<V> {
-        if let Some(entry) = self.data.get(key) {
+        if let Some(entry) = self.data.get(&key) {
             match entry {
                 CacheEntry::Loaded(data) => CacheResult::Found(data.clone()),
                 CacheEntry::Loading(_) => CacheResult::None, // todo: Are we treating Loading as present or not?
@@ -119,7 +119,7 @@ impl<
     }
 
     fn get(&mut self, key: K) -> CacheResult<V> {
-        if let Some(entry) = self.data.get(key.clone()) {
+        if let Some(entry) = self.data.get(&key) {
             match entry {
                 CacheEntry::Loaded(value) => {
                     CacheResult::Found(value.clone())

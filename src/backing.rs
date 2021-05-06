@@ -6,9 +6,9 @@ use lru::LruCache;
 pub trait CacheBacking<K, V>
     where K: Eq + Hash + Sized + Clone + Send,
           V: Sized + Clone + Send {
-    fn get(&mut self, key: K) -> Option<V>;
+    fn get(&mut self, key: &K) -> Option<&V>;
     fn set(&mut self, key: K, value: V) -> Option<V>;
-    fn remove(&mut self, key: K) -> Option<V>;
+    fn remove(&mut self, key: &K) -> Option<V>;
     fn contains_key(&self, key: &K) -> bool;
 }
 
@@ -22,16 +22,16 @@ impl<
     K: Eq + Hash + Sized + Clone + Send,
     V: Sized + Clone + Send
 > CacheBacking<K, V> for LruCacheBacking<K, V> {
-    fn get(&mut self, key: K) -> Option<V> {
-        self.lru.get(&key).cloned()
+    fn get(&mut self, key: &K) -> Option<&V> {
+        self.lru.get(key)
     }
 
     fn set(&mut self, key: K, value: V) -> Option<V> {
         self.lru.put(key, value)
     }
 
-    fn remove(&mut self, key: K) -> Option<V> {
-        self.lru.pop(&key)
+    fn remove(&mut self, key: &K) -> Option<V> {
+        self.lru.pop(key)
     }
 
     fn contains_key(&self, key: &K) -> bool {
@@ -65,16 +65,16 @@ impl<
     K: Eq + Hash + Sized + Clone + Send,
     V: Sized + Clone + Send
 > CacheBacking<K, V> for HashMapBacking<K, V> {
-    fn get(&mut self, key: K) -> Option<V> {
-        self.map.get(&key).cloned()
+    fn get(&mut self, key: &K) -> Option<&V> {
+        self.map.get(key)
     }
 
     fn set(&mut self, key: K, value: V) -> Option<V> {
         self.map.insert(key, value)
     }
 
-    fn remove(&mut self, key: K) -> Option<V> {
-        self.map.remove(&key)
+    fn remove(&mut self, key: &K) -> Option<V> {
+        self.map.remove(key)
     }
 
     fn contains_key(&self, key: &K) -> bool {
