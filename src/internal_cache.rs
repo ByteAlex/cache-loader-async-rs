@@ -96,8 +96,33 @@ impl<
                 CacheResult::Found(updated_data)
             }
             CacheResult::Loading(handle) => {
+                let tx = self.tx.clone();
                 CacheResult::Loading(tokio::spawn(async move {
-                    handle.await.unwrap() // todo: what now?
+                    handle.await.ok(); // set stupidly await the load to be done
+                    // we let the set logic take place which is called from within the future
+                    // and we're invoking a second update on the (now cached) data
+                    // todo: is there a possibility that this loops forever?
+                    let (response_tx, rx) = tokio::sync::oneshot::channel();
+                    tx.send(CacheMessage {
+                        action: CacheAction::Update(key, update_fn),
+                        response: response_tx,
+                    }).await.ok();
+                    match rx.await {
+                        Ok(result) => {
+                            match result {
+                                CacheResult::Found(data) => Ok(data),
+                                CacheResult::Loading(_) => Err(CacheLoadingError {
+                                    reason_phrase: "2nd lookup is not available".to_string()
+                                }),
+                                CacheResult::None => Err(CacheLoadingError {
+                                    reason_phrase: "2nd lookup is not available".to_string()
+                                })
+                            }
+                        }
+                        Err(_) => Err(CacheLoadingError {
+                            reason_phrase: "Error when receiving response".to_string()
+                        }),
+                    }
                 }))
             }
             CacheResult::None => CacheResult::None
