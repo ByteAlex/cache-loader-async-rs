@@ -197,4 +197,8 @@ async fn test_lru_backing() {
     assert_eq!(cache.get("key1".to_owned()).await.unwrap(), "value1".to_lowercase());
     assert_eq!(cache.get("key3".to_owned()).await.unwrap(), "value3".to_lowercase());
     assert_eq!(cache.get("key2".to_owned()).await.unwrap(), "key2".to_lowercase());
+
+    cache.set("remove_test".to_owned(), "delete_me".to_lowercase()).await.ok();
+    cache.remove("remove_test".to_owned()).await.ok();
+    assert_eq!(cache.get("remove_test".to_owned()).await.unwrap(), "remove_test".to_lowercase());
 }
