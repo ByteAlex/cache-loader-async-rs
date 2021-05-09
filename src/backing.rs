@@ -6,6 +6,7 @@ use lru::LruCache;
 pub trait CacheBacking<K, V>
     where K: Eq + Hash + Sized + Clone + Send,
           V: Sized + Clone + Send {
+    fn get_mut(&mut self, key: &K) -> Option<&mut V>;
     fn get(&mut self, key: &K) -> Option<&V>;
     fn set(&mut self, key: K, value: V) -> Option<V>;
     fn remove(&mut self, key: &K) -> Option<V>;
@@ -22,6 +23,10 @@ impl<
     K: Eq + Hash + Sized + Clone + Send,
     V: Sized + Clone + Send
 > CacheBacking<K, V> for LruCacheBacking<K, V> {
+    fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.lru.get_mut(key)
+    }
+
     fn get(&mut self, key: &K) -> Option<&V> {
         self.lru.get(key)
     }
@@ -65,6 +70,10 @@ impl<
     K: Eq + Hash + Sized + Clone + Send,
     V: Sized + Clone + Send
 > CacheBacking<K, V> for HashMapBacking<K, V> {
+    fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.map.get_mut(key)
+    }
+
     fn get(&mut self, key: &K) -> Option<&V> {
         self.map.get(key)
     }

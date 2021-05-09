@@ -155,6 +155,55 @@ async fn test_update() {
     println!("Result of updating loaded key while setting key manually with append _condition: {}", result);
     assert_eq!(result, "race_condition".to_owned());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_update_mut() {
+    let (cache, _) = LoadingCache::new(move |key: String| {
+        async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            Some(key.to_lowercase())
+        }
+    });
+
+    // We test to update an existing key
+    cache.set("woob".to_owned(), "Woob".to_owned()).await.ok();
+    let result = cache.update_mut("woob".to_owned(), | value| {
+        value.push_str("Woob");
+    }).await.unwrap();
+
+    println!("Result of updating existing key woob -> Woob with append Woob: {}", result);
+    assert_eq!(result, "WoobWoob".to_owned());
+
+
+    // We test to update an loaded key
+    let result = cache.update_mut("TEST".to_owned(), | value| {
+        value.push_str("_magic");
+    }).await.unwrap();
+
+    println!("Result of updating loaded key test -> test with append _magic: {}", result);
+    assert_eq!(result, "test_magic".to_owned());
+
+    // We test to update an loaded key which is `set` during the load time
+    // Our to_lower_case cache is supposed to load the `monka` key as `monka` value
+    // yet we'll be setting `race` as value while the loader function is running
+    // we'll expect the `race` value to be the preceding value over `monka`
+    // as it is user-controlled and more up-to-date.
+    // so the result of our test is supposed to be `race_condition`
+    let inner_cache = cache.clone();
+    let handle = tokio::spawn(async move {
+        inner_cache.update_mut("monka".to_owned(), | value| {
+            value.push_str("_condition");
+        }).await.unwrap()
+    });
+    let inner_cache = cache.clone();
+    tokio::spawn(async move {
+        inner_cache.set("monka".to_owned(), "race".to_owned()).await.ok();
+    });
+    let result = handle.await.unwrap();
+    println!("Result of updating loaded key while setting key manually with append _condition: {}", result);
+    assert_eq!(result, "race_condition".to_owned());
+}
+
 #[tokio::test]
 async fn test_remove() {
     let (cache, _) = LoadingCache::new(move |key: String| {

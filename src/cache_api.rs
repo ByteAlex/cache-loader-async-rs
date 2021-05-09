@@ -235,6 +235,12 @@ impl<
             .map(|opt_result| opt_result.expect("Get should always return either V or CacheLoadingError"))
     }
 
+    pub async fn update_mut<U>(&self, key: K, update_fn: U) -> Result<V, CacheLoadingError>
+        where U: FnMut(&mut V) -> () + Send + 'static {
+        self.send_cache_action(CacheAction::UpdateMut(key, Box::new(update_fn))).await
+            .map(|opt_result| opt_result.expect("Get should always return either V or CacheLoadingError"))
+    }
+
     async fn send_cache_action(&self, action: CacheAction<K, V>) -> Result<Option<V>, CacheLoadingError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         match self.tx.send(CacheMessage {

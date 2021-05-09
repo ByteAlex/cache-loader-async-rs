@@ -9,6 +9,7 @@ pub(crate) enum CacheAction<K, V> {
     Get(K),
     Set(K, V),
     Update(K, Box<dyn FnOnce(V) -> V + Send + 'static>),
+    UpdateMut(K, Box<dyn FnMut(&mut V) -> () + Send + 'static>),
     Remove(K),
     // Internal use
     SetAndUnblock(K, V),
@@ -55,6 +56,7 @@ impl<
                         CacheAction::Get(key) => self.get(key),
                         CacheAction::Set(key, value) => self.set(key, value, false),
                         CacheAction::Update(key, update_fn) => self.update(key, update_fn),
+                        CacheAction::UpdateMut(key, update_mut_fn) => self.update_mut(key, update_mut_fn),
                         CacheAction::Remove(key) => self.remove(key),
                         CacheAction::SetAndUnblock(key, value) => self.set(key, value, true),
                         CacheAction::Unblock(key) => {
@@ -85,6 +87,56 @@ impl<
             }
         } else {
             CacheResult::None
+        }
+    }
+
+    fn update_mut(&mut self, key: K, mut update_mut_fn: Box<dyn FnMut(&mut V) -> () + Send + 'static>) -> CacheResult<V> {
+        match self.data.get_mut(&key) {
+            Some(entry) => {
+                match entry {
+                    CacheEntry::Loaded(data) => {
+                        update_mut_fn(data);
+                        CacheResult::Found(data.clone())
+                    }
+                    CacheEntry::Loading(waiter) => {
+                        let mut rx = waiter.subscribe();
+                        let cache_tx = self.tx.clone();
+                        CacheResult::Loading(tokio::spawn(async move {
+                            rx.recv().await.ok(); // result confirmed
+                            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+                            cache_tx.send(CacheMessage {
+                                action: CacheAction::UpdateMut(key, update_mut_fn),
+                                response: response_tx
+                            }).await.ok();
+                            match response_rx.await.unwrap() {
+                                CacheResult::Found(data) => Ok(data),
+                                _ => Err(CacheLoadingError { reason_phrase: "No data found".to_owned() })
+                            }
+                        }))
+                    }
+                }
+            }
+            None => {
+                let result = self.get(key.clone());
+                match result {
+                    CacheResult::Loading(waiter) => {
+                        let cache_tx = self.tx.clone();
+                        CacheResult::Loading(tokio::spawn(async move {
+                            waiter.await.ok(); // result confirmed
+                            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+                            cache_tx.send(CacheMessage {
+                                action: CacheAction::UpdateMut(key, update_mut_fn),
+                                response: response_tx
+                            }).await.ok();
+                            match response_rx.await.unwrap() {
+                                CacheResult::Found(data) => Ok(data),
+                                _ => Err(CacheLoadingError { reason_phrase: "No data found".to_owned() })
+                            }
+                        }))
+                    }
+                    _ => CacheResult::None,
+                }
+            }
         }
     }
 
