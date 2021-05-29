@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::hash::Hash;
 #[cfg(feature = "lru-cache")]
 use lru::LruCache;
+#[cfg(feature = "moka-cache")]
+use moka::sync::Cache;
 
 pub trait CacheBacking<K, V>
     where K: Eq + Hash + Sized + Clone + Send,
@@ -58,6 +60,51 @@ impl<
     pub fn unbounded() -> LruCacheBacking<K, V> {
         LruCacheBacking {
             lru: LruCache::unbounded()
+        }
+    }
+}
+
+#[cfg(feature = "moka-cache")]
+pub struct TtlBacking<K, V> {
+    cache: Cache<K, V>
+}
+
+#[cfg(feature = "moka-cache")]
+impl<
+    K: Eq + Hash + Sized + Clone + Send,
+    V: Sized + Clone + Send
+> CacheBacking<K, V> for TtlBacking<K, V> {
+    fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.cache.get(&key).as_mut()
+    }
+
+    fn get(&mut self, key: &K) -> Option<&V> {
+        self.cache.get(&key)
+    }
+
+    fn set(&mut self, key: K, value: V) -> Option<V> {
+        let prev = self.cache.get(&key);
+        self.cache.insert(key, value);
+        prev
+    }
+
+    fn remove(&mut self, key: &K) -> Option<V> {
+        let prev = self.cache.get(&key);
+        self.cache.invalidate(&key);
+        prev
+    }
+
+    fn contains_key(&self, key: &K) -> bool {
+        self.cache.get(&key).is_some()
+    }
+}
+
+#[cfg(feature = "moka-cache")]
+impl<K, V> TtlBacking<K, V> {
+
+    pub fn new(moka_cache: Cache<K, V>) -> TtlBacking<K, V> {
+        TtlBacking {
+            cache: moka_cache
         }
     }
 }
