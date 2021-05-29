@@ -3,7 +3,11 @@ use std::hash::Hash;
 #[cfg(feature = "lru-cache")]
 use lru::LruCache;
 #[cfg(feature = "ttl-cache")]
-use moka::sync::Cache;
+use std::collections::VecDeque;
+#[cfg(feature = "ttl-cache")]
+use std::time::{SystemTime, Duration};
+#[cfg(feature = "ttl-cache")]
+use std::ops::Add;
 
 pub trait CacheBacking<K, V>
     where K: Eq + Hash + Sized + Clone + Send,
@@ -65,46 +69,75 @@ impl<
 }
 
 #[cfg(feature = "ttl-cache")]
-pub struct TtlBacking<K, V> {
-    cache: Cache<K, V>
+pub struct TtlCacheBacking<K, V> {
+    ttl: Duration,
+    expiry_queue: VecDeque<(K, SystemTime)>,
+    map: HashMap<K, (V, SystemTime)>,
 }
 
 #[cfg(feature = "ttl-cache")]
 impl<
     K: Eq + Hash + Sized + Clone + Send,
     V: Sized + Clone + Send
-> CacheBacking<K, V> for TtlBacking<K, V> {
+> CacheBacking<K, V> for TtlCacheBacking<K, V> {
     fn get_mut(&mut self, key: &K) -> Option<&mut V> {
-        self.cache.get(&key).as_mut()
+        self.remove_old();
+        self.map.get_mut(key)
+            .map(|(value, _)| value)
     }
 
     fn get(&mut self, key: &K) -> Option<&V> {
-        self.cache.get(&key)
+        self.remove_old();
+        self.map.get(key)
+            .map(|(value, _)| value)
     }
 
     fn set(&mut self, key: K, value: V) -> Option<V> {
-        let prev = self.cache.get(&key);
-        self.cache.insert(key, value);
-        prev
+        self.remove_old();
+        let expiry = SystemTime::now().add(self.ttl);
+        let option = self.map.insert(key.clone(), (value, expiry));
+        if option.is_some() {
+            self.expiry_queue.retain(|(vec_key, _)| vec_key.ne(&key));
+        }
+        self.expiry_queue.push_back((key, expiry));
+        option.map(|(value, _)| value)
     }
 
     fn remove(&mut self, key: &K) -> Option<V> {
-        let prev = self.cache.get(&key);
-        self.cache.invalidate(&key);
-        prev
+        self.remove_old();
+        let option = self.map.remove(key);
+        if option.is_some() {
+            self.expiry_queue.retain(|(vec_key, _)| vec_key.ne(&key));
+        }
+        option.map(|(value, _)| value)
     }
 
     fn contains_key(&self, key: &K) -> bool {
-        self.cache.get(&key).is_some()
+        // we cant clean old keys on this, since the self ref is not mutable :(
+        self.map.get(key)
+            .filter(|(_, expiry)| SystemTime::now().lt(expiry))
+            .is_some()
     }
 }
 
 #[cfg(feature = "ttl-cache")]
-impl<K, V> TtlBacking<K, V> {
+impl<K: Hash + Sized + PartialEq + Eq, V> TtlCacheBacking<K, V> {
+    pub fn new(ttl: Duration) -> TtlCacheBacking<K, V> {
+        TtlCacheBacking {
+            ttl,
+            map: HashMap::new(),
+            expiry_queue: VecDeque::new(),
+        }
+    }
 
-    pub fn new(moka_cache: Cache<K, V>) -> TtlBacking<K, V> {
-        TtlBacking {
-            cache: moka_cache
+    fn remove_old(&mut self) {
+        let now = SystemTime::now();
+        while let Some((key, expiry)) = self.expiry_queue.pop_front() {
+            if now.lt(&expiry) {
+                self.expiry_queue.push_front((key, expiry));
+                break;
+            }
+            self.map.remove(&key);
         }
     }
 }

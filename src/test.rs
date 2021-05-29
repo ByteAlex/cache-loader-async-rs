@@ -5,8 +5,6 @@ use tokio::time::Duration;
 use crate::backing::LruCacheBacking;
 #[cfg(feature = "ttl-cache")]
 use crate::backing::TtlCacheBacking;
-#[cfg(feature = "ttl-cache")]
-use moka::sync::CacheBuilder;
 
 #[derive(Debug, Clone)]
 pub struct ThingOne(u8);
@@ -171,7 +169,7 @@ async fn test_update_mut() {
 
     // We test to update an existing key
     cache.set("woob".to_owned(), "Woob".to_owned()).await.ok();
-    let result = cache.update_mut("woob".to_owned(), | value| {
+    let result = cache.update_mut("woob".to_owned(), |value| {
         value.push_str("Woob");
     }).await.unwrap();
 
@@ -180,7 +178,7 @@ async fn test_update_mut() {
 
 
     // We test to update an loaded key
-    let result = cache.update_mut("TEST".to_owned(), | value| {
+    let result = cache.update_mut("TEST".to_owned(), |value| {
         value.push_str("_magic");
     }).await.unwrap();
 
@@ -195,7 +193,7 @@ async fn test_update_mut() {
     // so the result of our test is supposed to be `race_condition`
     let inner_cache = cache.clone();
     let handle = tokio::spawn(async move {
-        inner_cache.update_mut("monka".to_owned(), | value| {
+        inner_cache.update_mut("monka".to_owned(), |value| {
             value.push_str("_condition");
         }).await.unwrap()
     });
@@ -259,15 +257,12 @@ async fn test_lru_backing() {
 #[cfg(feature = "ttl-cache")]
 #[tokio::test]
 async fn test_ttl_backing() {
-    let (cache, _) = LoadingCache::with_backing(TtlCacheBacking::new(
-        CacheBuilder::new(2)
-            .time_to_live(Duration::from_secs(3))
-            .build()
-    ), move |key: String| {
-        async move {
-            Some(key.to_lowercase())
-        }
-    });
+    let (cache, _) = LoadingCache::with_backing(
+        TtlCacheBacking::new(Duration::from_secs(3)), move |key: String| {
+            async move {
+                Some(key.to_lowercase())
+            }
+        });
 
     cache.set("key1".to_owned(), "value1".to_lowercase()).await.ok();
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -278,5 +273,5 @@ async fn test_ttl_backing() {
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    assert!(!cache.exists("key1".to_owned()).await.unwrap());
+    assert_eq!(cache.exists("key1".to_owned()).await.unwrap(), false);
 }
