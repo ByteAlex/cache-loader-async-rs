@@ -3,6 +3,10 @@ use crate::cache_api::LoadingCache;
 use tokio::time::Duration;
 #[cfg(feature = "lru-cache")]
 use crate::backing::LruCacheBacking;
+#[cfg(feature = "ttl-cache")]
+use crate::backing::TtlCacheBacking;
+#[cfg(feature = "ttl-cache")]
+use moka::sync::CacheBuilder;
 
 #[derive(Debug, Clone)]
 pub struct ThingOne(u8);
@@ -250,4 +254,29 @@ async fn test_lru_backing() {
     cache.set("remove_test".to_owned(), "delete_me".to_lowercase()).await.ok();
     cache.remove("remove_test".to_owned()).await.ok();
     assert_eq!(cache.get("remove_test".to_owned()).await.unwrap(), "remove_test".to_lowercase());
+}
+
+#[cfg(feature = "ttl-cache")]
+#[tokio::test]
+async fn test_ttl_backing() {
+    let (cache, _) = LoadingCache::with_backing(TtlCacheBacking::new(
+        CacheBuilder::new(2)
+            .time_to_live(Duration::from_secs(3))
+            .build()
+    ), move |key: String| {
+        async move {
+            Some(key.to_lowercase())
+        }
+    });
+
+    cache.set("key1".to_owned(), "value1".to_lowercase()).await.ok();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    cache.set("key2".to_owned(), "value2".to_lowercase()).await.ok();
+
+    assert_eq!(cache.get("key1".to_owned()).await.unwrap(), "value1".to_lowercase());
+    assert_eq!(cache.get("key2".to_owned()).await.unwrap(), "value2".to_lowercase());
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    assert!(!cache.exists("key1".to_owned()).await.unwrap());
 }
