@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 #[cfg(feature = "lru-cache")]
 use lru::LruCache;
-#[cfg(feature = "moka-cache")]
+#[cfg(feature = "ttl-cache")]
 use moka::sync::Cache;
 
 pub trait CacheBacking<K, V>
@@ -64,12 +64,12 @@ impl<
     }
 }
 
-#[cfg(feature = "moka-cache")]
+#[cfg(feature = "ttl-cache")]
 pub struct TtlBacking<K, V> {
     cache: Cache<K, V>
 }
 
-#[cfg(feature = "moka-cache")]
+#[cfg(feature = "ttl-cache")]
 impl<
     K: Eq + Hash + Sized + Clone + Send,
     V: Sized + Clone + Send
@@ -99,7 +99,7 @@ impl<
     }
 }
 
-#[cfg(feature = "moka-cache")]
+#[cfg(feature = "ttl-cache")]
 impl<K, V> TtlBacking<K, V> {
 
     pub fn new(moka_cache: Cache<K, V>) -> TtlBacking<K, V> {
