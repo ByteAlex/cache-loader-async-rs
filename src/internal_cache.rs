@@ -236,13 +236,16 @@ impl<
                     let waiter = waiter.clone();
                     CacheResult::Loading(tokio::spawn(async move {
                         if let Ok(result) = waiter.subscribe().recv().await {
-                            if let Some(data) = result {
-                                Ok(data)
-                            } else {
-                                Err(CacheLoadingError {
-                                    reason_phrase: "Loader function returned None".to_owned(),
-                                    loading_error: None  // todo: error kind for loading failure
-                                })
+                            match result {
+                                Ok(data) => {
+                                    Ok(data)
+                                }
+                                Err(loading_error) => {
+                                    Err(CacheLoadingError {
+                                        reason_phrase: "Loader function returned None".to_owned(),
+                                        loading_error: Some(loading_error)
+                                    })
+                                }
                             }
                         } else {
                             Err(CacheLoadingError {
@@ -257,31 +260,34 @@ impl<
             let (tx, _) = tokio::sync::broadcast::channel(1);
             let inner_tx = tx.clone();
             let cache_tx = self.tx.clone();
-            let loader = (self.loader)(key.clone()); // todo: Future=Result<V, LoadingError>
+            let loader = (self.loader)(key.clone());
             let inner_key = key.clone();
             let join_handle = tokio::spawn(async move {
-                if let Some(value) = loader.await {
-                    inner_tx.send(value.clone()).ok();
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    let send_value = value.clone();
-                    cache_tx.send(CacheMessage {
-                        action: CacheAction::SetAndUnblock(inner_key, send_value),
-                        response: tx,
-                    }).await.ok();
-                    rx.await.ok(); // await cache confirmation
-                    Ok(value)
-                } else {
-                    inner_tx.send(None).ok();
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    cache_tx.send(CacheMessage {
-                        action: CacheAction::Unblock(inner_key),
-                        response: tx,
-                    }).await.ok();
-                    rx.await.ok(); // await cache confirmation
-                    Err(CacheLoadingError {
-                        reason_phrase: "Loader function returned None".to_owned(),
-                        loading_error: None // todo: error kind for loading failure
-                    })
+                match loader.await {
+                    Ok(value) => {
+                        inner_tx.send(Ok(value.clone())).ok();
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        let send_value = value.clone();
+                        cache_tx.send(CacheMessage {
+                            action: CacheAction::SetAndUnblock(inner_key, send_value),
+                            response: tx,
+                        }).await.ok();
+                        rx.await.ok(); // await cache confirmation
+                        Ok(value)
+                    }
+                    Err(loading_error) => {
+                        inner_tx.send(Err(loading_error.clone())).ok();
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        cache_tx.send(CacheMessage {
+                            action: CacheAction::Unblock(inner_key),
+                            response: tx,
+                        }).await.ok();
+                        rx.await.ok(); // await cache confirmation
+                        Err(CacheLoadingError {
+                            reason_phrase: "Loader function returned an error".to_owned(),
+                            loading_error: Some(loading_error)
+                        })
+                    }
                 }
             });
             self.data.set(key, CacheEntry::Loading(tx));

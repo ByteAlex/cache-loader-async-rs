@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::cache_api::LoadingCache;
+use crate::cache_api::{LoadingCache, LoadingError};
 use tokio::time::Duration;
 #[cfg(feature = "lru-cache")]
 use crate::backing::LruCacheBacking;
@@ -30,14 +30,14 @@ async fn test_load() {
     let (cache_one, _) = LoadingCache::new(move |key: String| {
         let db_clone = thing_one_static_db.clone();
         async move {
-            db_clone.get(&key).cloned()
+            db_clone.get(&key).cloned().ok_or(LoadingError::new(1))
         }
     });
 
     let (cache_two, _) = LoadingCache::new(move |key: String| {
         let db_clone = thing_two_static_db.clone();
         async move {
-            db_clone.get(&key).cloned()
+            db_clone.get(&key).cloned().ok_or(LoadingError::new(1))
         }
     });
 
@@ -55,7 +55,7 @@ async fn test_load() {
 async fn test_write() {
     let (cache, _) = LoadingCache::new(move |key: String| {
         async move {
-            Some(key.to_lowercase())
+            Ok(key.to_lowercase())
         }
     });
 
@@ -74,7 +74,7 @@ async fn test_write() {
 async fn test_get_if_present() {
     let (cache, _) = LoadingCache::new(move |key: String| {
         async move {
-            Some(key.to_lowercase())
+            Ok(key.to_lowercase())
         }
     });
 
@@ -91,7 +91,7 @@ async fn test_get_if_present() {
 async fn test_exists() {
     let (cache, _) = LoadingCache::new(move |key: String| {
         async move {
-            Some(key.to_lowercase())
+            Ok(key.to_lowercase())
         }
     });
 
@@ -109,7 +109,7 @@ async fn test_update() {
     let (cache, _) = LoadingCache::new(move |key: String| {
         async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            Some(key.to_lowercase())
+            Ok(key.to_lowercase())
         }
     });
 
@@ -163,7 +163,7 @@ async fn test_update_mut() {
     let (cache, _) = LoadingCache::new(move |key: String| {
         async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            Some(key.to_lowercase())
+            Ok(key.to_lowercase())
         }
     });
 
@@ -211,7 +211,7 @@ async fn test_remove() {
     let (cache, _) = LoadingCache::new(move |key: String| {
         async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            Some(key.to_lowercase())
+            Ok(key.to_lowercase())
         }
     });
 
@@ -229,7 +229,7 @@ async fn test_remove() {
 async fn test_lru_backing() {
     let (cache, _) = LoadingCache::with_backing(LruCacheBacking::new(2), move |key: String| {
         async move {
-            Some(key.to_lowercase())
+            Ok(key.to_lowercase())
         }
     });
 
@@ -260,7 +260,7 @@ async fn test_ttl_backing() {
     let (cache, _) = LoadingCache::with_backing(
         TtlCacheBacking::new(Duration::from_secs(3)), move |key: String| {
             async move {
-                Some(key.to_lowercase())
+                Ok(key.to_lowercase())
             }
         });
 

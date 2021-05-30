@@ -84,7 +84,7 @@ impl<
     /// # Examples
     ///
     /// ```
-    /// use cache_loader_async::cache_api::LoadingCache;
+    /// use cache_loader_async::cache_api::{LoadingCache, LoadingError};
     /// use std::collections::HashMap;
     /// async fn example() {
     ///     let static_db: HashMap<String, u32> =
@@ -95,7 +95,7 @@ impl<
     ///     let (cache, _) = LoadingCache::new(move |key: String| {
     ///         let db_clone = static_db.clone();
     ///         async move {
-    ///             db_clone.get(&key).cloned()
+    ///             db_clone.get(&key).cloned().ok_or(LoadingError::new(1))
     ///         }
     ///     });
     ///
@@ -127,7 +127,7 @@ impl<
     /// # Examples
     ///
     /// ```
-    /// use cache_loader_async::cache_api::LoadingCache;
+    /// use cache_loader_async::cache_api::{LoadingCache, LoadingError};
     /// use std::collections::HashMap;
     /// use cache_loader_async::backing::HashMapBacking;
     /// async fn example() {
@@ -141,7 +141,7 @@ impl<
     ///         move |key: String| {
     ///             let db_clone = static_db.clone();
     ///             async move {
-    ///                 db_clone.get(&key).cloned()
+    ///                 db_clone.get(&key).cloned().ok_or(LoadingError::new(1))
     ///             }
     ///         }
     ///     );
