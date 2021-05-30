@@ -7,13 +7,47 @@ use crate::backing::{CacheBacking, HashMapBacking};
 #[derive(Debug, Clone)]
 pub struct CacheLoadingError {
     pub reason_phrase: String,
+    pub loading_error: Option<LoadingError>
     // todo: nested errors
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadingError {
+    error_code: i8,
+    reason_phrase: Option<String>,
+}
+
+impl LoadingError {
+
+    pub const LOADER_INTERNAL_ERROR: i8 = -1;
+
+    pub fn new(error_code: i8) -> LoadingError {
+        LoadingError {
+            error_code,
+            reason_phrase: None
+        }
+    }
+
+    pub fn with_reason_phrase(error_code: i8, reason_phrase: String) -> LoadingError {
+        LoadingError {
+            error_code,
+            reason_phrase: Some(reason_phrase)
+        }
+    }
+
+    pub fn get_error_code(&self) -> i8 {
+        self.error_code
+    }
+
+    pub fn get_reason(&self) -> Option<String> {
+        self.reason_phrase.clone()
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum CacheEntry<V> {
     Loaded(V),
-    Loading(tokio::sync::broadcast::Sender<Option<V>>),
+    Loading(tokio::sync::broadcast::Sender<Result<V, LoadingError>>),
 }
 
 #[derive(Debug)]
@@ -71,7 +105,7 @@ impl<
     /// }
     /// ```
     pub fn new<T, F>(loader: T) -> (LoadingCache<K, V>, CacheHandle)
-        where F: Future<Output=Option<V>> + Sized + Send + 'static,
+        where F: Future<Output=Result<V, LoadingError>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static {
         LoadingCache::with_backing(HashMapBacking::new(), loader)
     }
@@ -118,7 +152,7 @@ impl<
     /// }
     /// ```
     pub fn with_backing<T, F, B>(backing: B, loader: T) -> (LoadingCache<K, V>, CacheHandle)
-        where F: Future<Output=Option<V>> + Sized + Send + 'static,
+        where F: Future<Output=Result<V, LoadingError>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static,
               B: CacheBacking<K, CacheEntry<V>> + Send + 'static {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
@@ -258,7 +292,10 @@ impl<
                                         load_result.map(|v| Some(v))
                                     }
                                     Err(_) => {
-                                        Err(CacheLoadingError { reason_phrase: "Error when trying to join loader future".to_owned() })
+                                        Err(CacheLoadingError {
+                                            reason_phrase: "Error when trying to join loader future".to_owned(),
+                                            loading_error: None
+                                        })
                                     }
                                 }
                             }
@@ -266,12 +303,18 @@ impl<
                         }
                     }
                     Err(_) => {
-                        Err(CacheLoadingError { reason_phrase: "Error when receiving cache response".to_owned() })
+                        Err(CacheLoadingError {
+                            reason_phrase: "Error when receiving cache response".to_owned(),
+                            loading_error: None
+                        })
                     }
                 }
             }
             Err(_) => {
-                Err(CacheLoadingError { reason_phrase: "Error when trying to submit cache request".to_owned() })
+                Err(CacheLoadingError {
+                    reason_phrase: "Error when trying to submit cache request".to_owned(),
+                    loading_error: None
+                })
             }
         }
     }

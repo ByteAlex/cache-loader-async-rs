@@ -1,7 +1,7 @@
 use std::hash::Hash;
 use futures::Future;
 use tokio::task::JoinHandle;
-use crate::cache_api::{CacheResult, CacheLoadingError, CacheEntry};
+use crate::cache_api::{CacheResult, CacheLoadingError, CacheEntry, LoadingError};
 use crate::backing::CacheBacking;
 
 pub(crate) enum CacheAction<K, V> {
@@ -30,7 +30,7 @@ pub(crate) struct InternalCacheStore<K, V, T, B> {
 impl<
     K: Eq + Hash + Clone + Send + 'static,
     V: Clone + Sized + Send + 'static,
-    F: Future<Output=Option<V>> + Sized + Send + 'static,
+    F: Future<Output=Result<V, LoadingError>> + Sized + Send + 'static,
     T: Fn(K) -> F + Send + 'static,
     B: CacheBacking<K, CacheEntry<V>> + Send + 'static
 > InternalCacheStore<K, V, T, B>
@@ -73,7 +73,10 @@ impl<
     fn unblock(&mut self, key: K) {
         if let Some(entry) = self.data.get(&key) {
             if let CacheEntry::Loading(waiter) = entry {
-                waiter.send(None).ok();
+                waiter.send(Err(LoadingError::with_reason_phrase(
+                    LoadingError::LOADER_INTERNAL_ERROR,
+                    "An internal error occurred when trying to load key, please check logs.".to_owned()
+                ))).ok();
                 self.data.remove(&key);
             }
         }
@@ -110,7 +113,10 @@ impl<
                             }).await.ok();
                             match response_rx.await.unwrap() {
                                 CacheResult::Found(data) => Ok(data),
-                                _ => Err(CacheLoadingError { reason_phrase: "No data found".to_owned() })
+                                _ => Err(CacheLoadingError {
+                                    reason_phrase: "No data found".to_owned(),
+                                    loading_error: None
+                                })
                             }
                         }))
                     }
@@ -130,7 +136,10 @@ impl<
                             }).await.ok();
                             match response_rx.await.unwrap() {
                                 CacheResult::Found(data) => Ok(data),
-                                _ => Err(CacheLoadingError { reason_phrase: "No data found".to_owned() })
+                                _ => Err(CacheLoadingError {
+                                    reason_phrase: "No data found".to_owned(),
+                                    loading_error: None
+                                })
                             }
                         }))
                     }
@@ -164,15 +173,18 @@ impl<
                             match result {
                                 CacheResult::Found(data) => Ok(data),
                                 CacheResult::Loading(_) => Err(CacheLoadingError {
-                                    reason_phrase: "2nd lookup is not available".to_string()
+                                    reason_phrase: "2nd lookup is not available".to_string(),
+                                    loading_error: None
                                 }),
                                 CacheResult::None => Err(CacheLoadingError {
-                                    reason_phrase: "2nd lookup is not available".to_string()
+                                    reason_phrase: "2nd lookup is not available".to_string(),
+                                    loading_error: None
                                 })
                             }
                         }
                         Err(_) => Err(CacheLoadingError {
-                            reason_phrase: "Error when receiving response".to_string()
+                            reason_phrase: "Error when receiving response".to_string(),
+                            loading_error: None
                         }),
                     }
                 }))
@@ -227,10 +239,16 @@ impl<
                             if let Some(data) = result {
                                 Ok(data)
                             } else {
-                                Err(CacheLoadingError { reason_phrase: "Loader function returned None".to_owned() })
+                                Err(CacheLoadingError {
+                                    reason_phrase: "Loader function returned None".to_owned(),
+                                    loading_error: None  // todo: error kind for loading failure
+                                })
                             }
                         } else {
-                            Err(CacheLoadingError { reason_phrase: "Waiter broadcast channel error".to_owned() })
+                            Err(CacheLoadingError {
+                                reason_phrase: "Waiter broadcast channel error".to_owned(),
+                                loading_error: None
+                            })
                         }
                     }))
                 }
@@ -239,11 +257,11 @@ impl<
             let (tx, _) = tokio::sync::broadcast::channel(1);
             let inner_tx = tx.clone();
             let cache_tx = self.tx.clone();
-            let loader = (self.loader)(key.clone());
+            let loader = (self.loader)(key.clone()); // todo: Future=Result<V, LoadingError>
             let inner_key = key.clone();
             let join_handle = tokio::spawn(async move {
                 if let Some(value) = loader.await {
-                    inner_tx.send(Some(value.clone())).ok();
+                    inner_tx.send(value.clone()).ok();
                     let (tx, rx) = tokio::sync::oneshot::channel();
                     let send_value = value.clone();
                     cache_tx.send(CacheMessage {
@@ -260,7 +278,10 @@ impl<
                         response: tx,
                     }).await.ok();
                     rx.await.ok(); // await cache confirmation
-                    Err(CacheLoadingError { reason_phrase: "Loader function returned None".to_owned() })
+                    Err(CacheLoadingError {
+                        reason_phrase: "Loader function returned None".to_owned(),
+                        loading_error: None // todo: error kind for loading failure
+                    })
                 }
             });
             self.data.set(key, CacheEntry::Loading(tx));
