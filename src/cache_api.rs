@@ -13,29 +13,29 @@ pub struct CacheLoadingError {
 
 #[derive(Debug, Clone)]
 pub struct LoadingError {
-    error_code: i8,
+    error_code: i16,
     reason_phrase: Option<String>,
 }
 
 impl LoadingError {
 
-    pub const LOADER_INTERNAL_ERROR: i8 = -1;
+    pub const LOADER_INTERNAL_ERROR: i16 = -1;
 
-    pub fn new(error_code: i8) -> LoadingError {
+    pub fn new(error_code: i16) -> LoadingError {
         LoadingError {
             error_code,
             reason_phrase: None
         }
     }
 
-    pub fn with_reason_phrase(error_code: i8, reason_phrase: String) -> LoadingError {
+    pub fn with_reason_phrase(error_code: i16, reason_phrase: String) -> LoadingError {
         LoadingError {
             error_code,
             reason_phrase: Some(reason_phrase)
         }
     }
 
-    pub fn get_error_code(&self) -> i8 {
+    pub fn get_error_code(&self) -> i16 {
         self.error_code
     }
 
