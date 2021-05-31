@@ -224,6 +224,22 @@ async fn test_remove() {
     assert_eq!(cache.get("test".to_owned()).await.unwrap(), "test".to_owned());
 }
 
+#[tokio::test]
+async fn test_meta() {
+    let (cache, _) = LoadingCache::new(move |key: String| {
+        async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            Ok(key.to_lowercase())
+        }
+    });
+
+    let meta = cache.get_with_meta("key".to_owned()).await.unwrap();
+    assert!(!meta.cached);
+
+    let meta = cache.get_with_meta("key".to_owned()).await.unwrap();
+    assert!(meta.cached);
+}
+
 #[cfg(feature = "lru-cache")]
 #[tokio::test]
 async fn test_lru_backing() {
