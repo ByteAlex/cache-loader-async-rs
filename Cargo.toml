@@ -21,3 +21,4 @@ lru = { version = "0.6.5", optional = true }
 [features]
 default = []
 lru-cache = ["lru"]
+ttl-cache = []

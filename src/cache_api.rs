@@ -7,13 +7,52 @@ use crate::backing::{CacheBacking, HashMapBacking};
 #[derive(Debug, Clone)]
 pub struct CacheLoadingError {
     pub reason_phrase: String,
+    pub loading_error: Option<LoadingError>,
     // todo: nested errors
+}
+
+#[derive(Clone)]
+pub struct ResultMeta<V> {
+    pub result: V,
+    pub cached: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadingError {
+    error_code: i16,
+    reason_phrase: Option<String>,
+}
+
+impl LoadingError {
+    pub const LOADER_INTERNAL_ERROR: i16 = -1;
+
+    pub fn new(error_code: i16) -> LoadingError {
+        LoadingError {
+            error_code,
+            reason_phrase: None,
+        }
+    }
+
+    pub fn with_reason_phrase(error_code: i16, reason_phrase: String) -> LoadingError {
+        LoadingError {
+            error_code,
+            reason_phrase: Some(reason_phrase),
+        }
+    }
+
+    pub fn get_error_code(&self) -> i16 {
+        self.error_code
+    }
+
+    pub fn get_reason(&self) -> Option<String> {
+        self.reason_phrase.clone()
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum CacheEntry<V> {
     Loaded(V),
-    Loading(tokio::sync::broadcast::Sender<Option<V>>),
+    Loading(tokio::sync::broadcast::Sender<Result<V, LoadingError>>),
 }
 
 #[derive(Debug)]
@@ -50,7 +89,7 @@ impl<
     /// # Examples
     ///
     /// ```
-    /// use cache_loader_async::cache_api::LoadingCache;
+    /// use cache_loader_async::cache_api::{LoadingCache, LoadingError};
     /// use std::collections::HashMap;
     /// async fn example() {
     ///     let static_db: HashMap<String, u32> =
@@ -61,7 +100,7 @@ impl<
     ///     let (cache, _) = LoadingCache::new(move |key: String| {
     ///         let db_clone = static_db.clone();
     ///         async move {
-    ///             db_clone.get(&key).cloned()
+    ///             db_clone.get(&key).cloned().ok_or(LoadingError::new(1))
     ///         }
     ///     });
     ///
@@ -71,7 +110,7 @@ impl<
     /// }
     /// ```
     pub fn new<T, F>(loader: T) -> (LoadingCache<K, V>, CacheHandle)
-        where F: Future<Output=Option<V>> + Sized + Send + 'static,
+        where F: Future<Output=Result<V, LoadingError>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static {
         LoadingCache::with_backing(HashMapBacking::new(), loader)
     }
@@ -93,7 +132,7 @@ impl<
     /// # Examples
     ///
     /// ```
-    /// use cache_loader_async::cache_api::LoadingCache;
+    /// use cache_loader_async::cache_api::{LoadingCache, LoadingError};
     /// use std::collections::HashMap;
     /// use cache_loader_async::backing::HashMapBacking;
     /// async fn example() {
@@ -107,7 +146,7 @@ impl<
     ///         move |key: String| {
     ///             let db_clone = static_db.clone();
     ///             async move {
-    ///                 db_clone.get(&key).cloned()
+    ///                 db_clone.get(&key).cloned().ok_or(LoadingError::new(1))
     ///             }
     ///         }
     ///     );
@@ -118,7 +157,7 @@ impl<
     /// }
     /// ```
     pub fn with_backing<T, F, B>(backing: B, loader: T) -> (LoadingCache<K, V>, CacheHandle)
-        where F: Future<Output=Option<V>> + Sized + Send + 'static,
+        where F: Future<Output=Result<V, LoadingError>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static,
               B: CacheBacking<K, CacheEntry<V>> + Send + 'static {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
@@ -143,6 +182,12 @@ impl<
     pub async fn get(&self, key: K) -> Result<V, CacheLoadingError> {
         self.send_cache_action(CacheAction::Get(key)).await
             .map(|opt_result| opt_result.expect("Get should always return either V or CacheLoadingError"))
+            .map(|meta| meta.result)
+    }
+
+    pub async fn get_with_meta(&self, key: K) -> Result<ResultMeta<V>, CacheLoadingError> {
+        self.send_cache_action(CacheAction::Get(key)).await
+            .map(|opt_result| opt_result.expect("Get should always return either V or CacheLoadingError"))
     }
 
     /// Sets the value for specified key and bypasses eventual currently ongoing loads
@@ -161,6 +206,7 @@ impl<
     /// Err - Error of type CacheLoadingError
     pub async fn set(&self, key: K, value: V) -> Result<Option<V>, CacheLoadingError> {
         self.send_cache_action(CacheAction::Set(key, value)).await
+            .map(|opt_meta| opt_meta.map(|meta| meta.result))
     }
 
     /// Loads the value for the specified key from the cache and returns None if not present
@@ -176,6 +222,7 @@ impl<
     /// Err - Error of type CacheLoadingError
     pub async fn get_if_present(&self, key: K) -> Result<Option<V>, CacheLoadingError> {
         self.send_cache_action(CacheAction::GetIfPresent(key)).await
+            .map(|opt_meta| opt_meta.map(|meta| meta.result))
     }
 
     /// Checks whether a specific value is mapped for the given key
@@ -208,6 +255,7 @@ impl<
     /// Err - Error of type CacheLoadingError
     pub async fn remove(&self, key: K) -> Result<Option<V>, CacheLoadingError> {
         self.send_cache_action(CacheAction::Remove(key)).await
+            .map(|opt_meta| opt_meta.map(|meta| meta.result))
     }
 
     /// Updates a key on the cache with the given update function and returns the previous value
@@ -233,15 +281,17 @@ impl<
         where U: FnOnce(V) -> V + Send + 'static {
         self.send_cache_action(CacheAction::Update(key, Box::new(update_fn))).await
             .map(|opt_result| opt_result.expect("Get should always return either V or CacheLoadingError"))
+            .map(|meta| meta.result)
     }
 
     pub async fn update_mut<U>(&self, key: K, update_fn: U) -> Result<V, CacheLoadingError>
         where U: FnMut(&mut V) -> () + Send + 'static {
         self.send_cache_action(CacheAction::UpdateMut(key, Box::new(update_fn))).await
             .map(|opt_result| opt_result.expect("Get should always return either V or CacheLoadingError"))
+            .map(|meta| meta.result)
     }
 
-    async fn send_cache_action(&self, action: CacheAction<K, V>) -> Result<Option<V>, CacheLoadingError> {
+    async fn send_cache_action(&self, action: CacheAction<K, V>) -> Result<Option<ResultMeta<V>>, CacheLoadingError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         match self.tx.send(CacheMessage {
             action,
@@ -251,14 +301,25 @@ impl<
                 match rx.await {
                     Ok(result) => {
                         match result {
-                            CacheResult::Found(value) => { Ok(Some(value)) }
+                            CacheResult::Found(value) => {
+                                Ok(Some(ResultMeta {
+                                    result: value,
+                                    cached: true,
+                                }))
+                            }
                             CacheResult::Loading(handle) => {
                                 match handle.await {
                                     Ok(load_result) => {
-                                        load_result.map(|v| Some(v))
+                                        load_result.map(|v| Some(ResultMeta {
+                                            result: v,
+                                            cached: false,
+                                        }))
                                     }
                                     Err(_) => {
-                                        Err(CacheLoadingError { reason_phrase: "Error when trying to join loader future".to_owned() })
+                                        Err(CacheLoadingError {
+                                            reason_phrase: "Error when trying to join loader future".to_owned(),
+                                            loading_error: None,
+                                        })
                                     }
                                 }
                             }
@@ -266,12 +327,18 @@ impl<
                         }
                     }
                     Err(_) => {
-                        Err(CacheLoadingError { reason_phrase: "Error when receiving cache response".to_owned() })
+                        Err(CacheLoadingError {
+                            reason_phrase: "Error when receiving cache response".to_owned(),
+                            loading_error: None,
+                        })
                     }
                 }
             }
             Err(_) => {
-                Err(CacheLoadingError { reason_phrase: "Error when trying to submit cache request".to_owned() })
+                Err(CacheLoadingError {
+                    reason_phrase: "Error when trying to submit cache request".to_owned(),
+                    loading_error: None,
+                })
             }
         }
     }
