@@ -8,7 +8,7 @@ use std::fmt::Debug;
 
 #[derive(Error, Debug)]
 pub enum CacheLoadingError<E: Debug> {
-    #[error("Cache communication error")]
+    #[error(transparent)]
     CommunicationError(CacheCommunicationError),
     #[error("No data found")]
     NoData(), // todo better handling here? eventually return loadingerror if possible
