@@ -21,7 +21,7 @@ pub enum CacheLoadingError<E: Debug> {
     #[error("No data found")]
     NoData(),
     #[error("An error occurred when loading the entity from the loader function")]
-    LoadingError(LoadingError<E>)
+    LoadingError(E)
 }
 
 #[derive(Clone)]
@@ -30,18 +30,10 @@ pub struct ResultMeta<V> {
     pub cached: bool,
 }
 
-#[derive(Error, Debug, Clone)]
-pub enum LoadingError<E: Debug> {
-    #[error("The loader got cancelled")]
-    LoadCancelled(),
-    #[error("A custom loader error occurred")]
-    LoadError(E)
-}
-
 #[derive(Debug, Clone)]
 pub enum CacheEntry<V, E: Debug> {
     Loaded(V),
-    Loading(tokio::sync::broadcast::Sender<Result<V, LoadingError<E>>>),
+    Loading(tokio::sync::broadcast::Sender<Result<V, E>>),
 }
 
 #[derive(Debug)]
@@ -79,7 +71,7 @@ impl<
     /// # Examples
     ///
     /// ```
-    /// use cache_loader_async::cache_api::{LoadingCache, LoadingError};
+    /// use cache_loader_async::cache_api::LoadingCache;
     /// use std::collections::HashMap;
     /// async fn example() {
     ///     let static_db: HashMap<String, u32> =
@@ -90,7 +82,7 @@ impl<
     ///     let (cache, _) = LoadingCache::new(move |key: String| {
     ///         let db_clone = static_db.clone();
     ///         async move {
-    ///             db_clone.get(&key).cloned().ok_or(LoadingError::LoadError(1))
+    ///             db_clone.get(&key).cloned().ok_or(1)
     ///         }
     ///     });
     ///
@@ -100,7 +92,7 @@ impl<
     /// }
     /// ```
     pub fn new<T, F>(loader: T) -> (LoadingCache<K, V, E>, CacheHandle)
-        where F: Future<Output=Result<V, LoadingError<E>>> + Sized + Send + 'static,
+        where F: Future<Output=Result<V, E>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static {
         LoadingCache::with_backing(HashMapBacking::new(), loader)
     }
@@ -122,7 +114,7 @@ impl<
     /// # Examples
     ///
     /// ```
-    /// use cache_loader_async::cache_api::{LoadingCache, LoadingError};
+    /// use cache_loader_async::cache_api::LoadingCache;
     /// use std::collections::HashMap;
     /// use cache_loader_async::backing::HashMapBacking;
     /// async fn example() {
@@ -136,7 +128,7 @@ impl<
     ///         move |key: String| {
     ///             let db_clone = static_db.clone();
     ///             async move {
-    ///                 db_clone.get(&key).cloned().ok_or(LoadingError::LoadError(1))
+    ///                 db_clone.get(&key).cloned().ok_or(1)
     ///             }
     ///         }
     ///     );
@@ -147,7 +139,7 @@ impl<
     /// }
     /// ```
     pub fn with_backing<T, F, B>(backing: B, loader: T) -> (LoadingCache<K, V, E>, CacheHandle)
-        where F: Future<Output=Result<V, LoadingError<E>>> + Sized + Send + 'static,
+        where F: Future<Output=Result<V, E>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static,
               B: CacheBacking<K, CacheEntry<V, E>> + Send + 'static {
         let (tx, rx) = tokio::sync::mpsc::channel(128);

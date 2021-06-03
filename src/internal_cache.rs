@@ -1,7 +1,7 @@
 use std::hash::Hash;
 use futures::Future;
 use tokio::task::JoinHandle;
-use crate::cache_api::{CacheResult, CacheLoadingError, CacheEntry, LoadingError};
+use crate::cache_api::{CacheResult, CacheLoadingError, CacheEntry};
 use crate::backing::CacheBacking;
 use std::fmt::Debug;
 
@@ -32,7 +32,7 @@ impl<
     K: Eq + Hash + Clone + Send + 'static,
     V: Clone + Sized + Send + 'static,
     E: Clone + Sized + Send + Debug + 'static,
-    F: Future<Output=Result<V, LoadingError<E>>> + Sized + Send + 'static,
+    F: Future<Output=Result<V, E>> + Sized + Send + 'static,
     T: Fn(K) -> F + Send + 'static,
     B: CacheBacking<K, CacheEntry<V, E>> + Send + 'static
 > InternalCacheStore<K, V, T, B, E>
@@ -74,9 +74,12 @@ impl<
 
     fn unblock(&mut self, key: K) {
         if let Some(entry) = self.data.get(&key) {
-            if let CacheEntry::Loading(waiter) = entry {
-                waiter.send(Err(LoadingError::LoadCancelled())).ok();
-                self.data.remove(&key);
+            if let CacheEntry::Loading(_) = entry {
+                if let Some(entry) = self.data.remove(&key) {
+                    if let CacheEntry::Loading(waiter) = entry {
+                        std::mem::drop(waiter) // dropping the sender closes the channel
+                    }
+                }
             }
         }
     }

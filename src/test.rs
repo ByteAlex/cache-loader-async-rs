@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::cache_api::{LoadingCache, LoadingError, CacheLoadingError};
+use crate::cache_api::{LoadingCache, CacheLoadingError};
 use tokio::time::Duration;
 #[cfg(feature = "lru-cache")]
 use crate::backing::LruCacheBacking;
@@ -30,14 +30,14 @@ async fn test_load() {
     let (cache_one, _) = LoadingCache::new(move |key: String| {
         let db_clone = thing_one_static_db.clone();
         async move {
-            db_clone.get(&key).cloned().ok_or(LoadingError::LoadError(1))
+            db_clone.get(&key).cloned().ok_or(1)
         }
     });
 
     let (cache_two, _) = LoadingCache::new(move |key: String| {
         let db_clone = thing_two_static_db.clone();
         async move {
-            db_clone.get(&key).cloned().ok_or(LoadingError::LoadError(1))
+            db_clone.get(&key).cloned().ok_or(1)
         }
     });
 
@@ -234,18 +234,14 @@ async fn test_remove() {
 async fn test_load_error() {
     let (cache, _) = LoadingCache::new(move |_key: String| {
         async move {
-            Err(LoadingError::LoadError(5))
+            Err(5)
         }
     });
     let cache: LoadingCache<String, String, u8> = cache;
 
     let cache_loading_error = cache.get("test".to_owned()).await.expect_err("Didn't error, what?");
-    if let CacheLoadingError::LoadingError(error) = cache_loading_error {
-        if let LoadingError::LoadError(val) = error {
-            assert_eq!(val, 5)
-        } else {
-            panic!("Load cancelled unexpectedly")
-        }
+    if let CacheLoadingError::LoadingError(val) = cache_loading_error {
+        assert_eq!(val, 5)
     } else {
         panic!("Unexpected error type");
     }
