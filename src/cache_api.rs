@@ -21,11 +21,11 @@ pub enum CacheCommunicationError {
     #[error("An error occurred when trying to submit the cache request")]
     TokioMpscSendError(),
     #[error("An error occurred when trying to join the result future")]
-    FutureJoinError(tokio::task::JoinError),
+    FutureJoinError(#[from] tokio::task::JoinError),
     #[error("An error occurred when waiting for the broadcaster response")]
-    TokioBroadcastRecvError(tokio::sync::broadcast::error::RecvError),
+    TokioBroadcastRecvError(#[from] tokio::sync::broadcast::error::RecvError),
     #[error("An error occurred when receiving the response")]
-    TokioOneshotRecvError(tokio::sync::oneshot::error::RecvError),
+    TokioOneshotRecvError(#[from] tokio::sync::oneshot::error::RecvError),
     #[error("Lookups are looping, internal error")]
     LookupLoop(),
 }
