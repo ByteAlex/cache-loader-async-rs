@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::cache_api::{LoadingCache, LoadingError};
+use crate::cache_api::{LoadingCache, LoadingError, CacheLoadingError};
 use tokio::time::Duration;
 #[cfg(feature = "lru-cache")]
 use crate::backing::LruCacheBacking;
@@ -30,14 +30,14 @@ async fn test_load() {
     let (cache_one, _) = LoadingCache::new(move |key: String| {
         let db_clone = thing_one_static_db.clone();
         async move {
-            db_clone.get(&key).cloned().ok_or(LoadingError::new(1))
+            db_clone.get(&key).cloned().ok_or(LoadingError::LoadError(1))
         }
     });
 
     let (cache_two, _) = LoadingCache::new(move |key: String| {
         let db_clone = thing_two_static_db.clone();
         async move {
-            db_clone.get(&key).cloned().ok_or(LoadingError::new(1))
+            db_clone.get(&key).cloned().ok_or(LoadingError::LoadError(1))
         }
     });
 
@@ -58,6 +58,7 @@ async fn test_write() {
             Ok(key.to_lowercase())
         }
     });
+    let cache: LoadingCache<String, String, u8> = cache;
 
     let lowercase_result = cache.get("LOL".to_owned()).await.unwrap();
     println!("Result of lowercase loader: {}", lowercase_result);
@@ -77,6 +78,7 @@ async fn test_get_if_present() {
             Ok(key.to_lowercase())
         }
     });
+    let cache: LoadingCache<String, String, u8> = cache;
 
     let option = cache.get_if_present("test".to_owned()).await.unwrap();
     assert!(option.is_none());
@@ -94,6 +96,7 @@ async fn test_exists() {
             Ok(key.to_lowercase())
         }
     });
+    let cache: LoadingCache<String, String, u8> = cache;
 
     let exists = cache.exists("test".to_owned()).await.unwrap();
     assert!(!exists);
@@ -112,6 +115,7 @@ async fn test_update() {
             Ok(key.to_lowercase())
         }
     });
+    let cache: LoadingCache<String, String, u8> = cache;
 
     // We test to update an existing key
     cache.set("woob".to_owned(), "Woob".to_owned()).await.ok();
@@ -166,6 +170,7 @@ async fn test_update_mut() {
             Ok(key.to_lowercase())
         }
     });
+    let cache: LoadingCache<String, String, u8> = cache;
 
     // We test to update an existing key
     cache.set("woob".to_owned(), "Woob".to_owned()).await.ok();
@@ -214,6 +219,7 @@ async fn test_remove() {
             Ok(key.to_lowercase())
         }
     });
+    let cache: LoadingCache<String, String, u8> = cache;
 
     cache.set("test".to_owned(), "lol".to_owned()).await.ok();
 
@@ -225,6 +231,27 @@ async fn test_remove() {
 }
 
 #[tokio::test]
+async fn test_load_error() {
+    let (cache, _) = LoadingCache::new(move |_key: String| {
+        async move {
+            Err(LoadingError::LoadError(5))
+        }
+    });
+    let cache: LoadingCache<String, String, u8> = cache;
+
+    let cache_loading_error = cache.get("test".to_owned()).await.expect_err("Didn't error, what?");
+    if let CacheLoadingError::LoadingError(error) = cache_loading_error {
+        if let LoadingError::LoadError(val) = error {
+            assert_eq!(val, 5)
+        } else {
+            panic!("Load cancelled unexpectedly")
+        }
+    } else {
+        panic!("Unexpected error type");
+    }
+}
+
+#[tokio::test]
 async fn test_meta() {
     let (cache, _) = LoadingCache::new(move |key: String| {
         async move {
@@ -232,6 +259,7 @@ async fn test_meta() {
             Ok(key.to_lowercase())
         }
     });
+    let cache: LoadingCache<String, String, u8> = cache;
 
     let meta = cache.get_with_meta("key".to_owned()).await.unwrap();
     assert!(!meta.cached);
@@ -248,6 +276,7 @@ async fn test_lru_backing() {
             Ok(key.to_lowercase())
         }
     });
+    let cache: LoadingCache<String, String, u8> = cache;
 
     cache.set("key1".to_owned(), "value1".to_lowercase()).await.ok();
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -279,6 +308,7 @@ async fn test_ttl_backing() {
                 Ok(key.to_lowercase())
             }
         });
+    let cache: LoadingCache<String, String, u8> = cache;
 
     cache.set("key1".to_owned(), "value1".to_lowercase()).await.ok();
     tokio::time::sleep(Duration::from_secs(2)).await;
