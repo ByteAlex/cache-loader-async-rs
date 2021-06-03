@@ -1,7 +1,7 @@
 use std::hash::Hash;
 use futures::Future;
 use tokio::task::JoinHandle;
-use crate::cache_api::{CacheResult, CacheLoadingError, CacheEntry};
+use crate::cache_api::{CacheResult, CacheLoadingError, CacheEntry, CacheCommunicationError};
 use crate::backing::CacheBacking;
 use std::fmt::Debug;
 
@@ -168,11 +168,11 @@ impl<
                         Ok(result) => {
                             match result {
                                 CacheResult::Found(data) => Ok(data),
-                                CacheResult::Loading(_) => Err(CacheLoadingError::LookupLoop()),
-                                CacheResult::None => Err(CacheLoadingError::LookupLoop())
+                                CacheResult::Loading(_) => Err(CacheLoadingError::CommunicationError(CacheCommunicationError::LookupLoop())),
+                                CacheResult::None => Err(CacheLoadingError::CommunicationError(CacheCommunicationError::LookupLoop()))
                             }
                         }
-                        Err(err) => Err(CacheLoadingError::TokioOneshotRecvError(err)),
+                        Err(err) => Err(CacheLoadingError::CommunicationError(CacheCommunicationError::TokioOneshotRecvError(err))),
                     }
                 }))
             }
@@ -233,7 +233,7 @@ impl<
                                     }
                                 }
                             }
-                            Err(err) => Err(CacheLoadingError::TokioBroadcastRecvError(err))
+                            Err(err) => Err(CacheLoadingError::CommunicationError(CacheCommunicationError::TokioBroadcastRecvError(err)))
                         }
                     }))
                 }

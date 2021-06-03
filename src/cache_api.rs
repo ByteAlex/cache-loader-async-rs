@@ -8,6 +8,16 @@ use std::fmt::Debug;
 
 #[derive(Error, Debug)]
 pub enum CacheLoadingError<E: Debug> {
+    #[error("Cache communication error")]
+    CommunicationError(CacheCommunicationError),
+    #[error("No data found")]
+    NoData(), // todo better handling here? eventually return loadingerror if possible
+    #[error("An error occurred when loading the entity from the loader function")]
+    LoadingError(E)
+}
+
+#[derive(Error, Debug)]
+pub enum CacheCommunicationError {
     #[error("An error occurred when trying to submit the cache request")]
     TokioMpscSendError(),
     #[error("An error occurred when trying to join the result future")]
@@ -18,10 +28,37 @@ pub enum CacheLoadingError<E: Debug> {
     TokioOneshotRecvError(tokio::sync::oneshot::error::RecvError),
     #[error("Lookups are looping, internal error")]
     LookupLoop(),
-    #[error("No data found")]
-    NoData(),
-    #[error("An error occurred when loading the entity from the loader function")]
-    LoadingError(E)
+}
+
+impl<E: Debug> CacheLoadingError<E> {
+
+    pub fn as_loading_error(&self) -> Option<&E> {
+        match self {
+            CacheLoadingError::LoadingError(error) => Some(error),
+            _ => None
+        }
+    }
+
+    pub fn into_loading_error(self) -> Option<E> {
+        match self {
+            CacheLoadingError::LoadingError(error) => Some(error),
+            _ => None
+        }
+    }
+
+    pub fn as_communication_error(&self) -> Option<&CacheCommunicationError> {
+        match self {
+            CacheLoadingError::CommunicationError(error) => Some(error),
+            _ => None
+        }
+    }
+
+    pub fn into_communication_error(self) -> Option<CacheCommunicationError> {
+        match self {
+            CacheLoadingError::CommunicationError(error) => Some(error),
+            _ => None
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -298,7 +335,7 @@ impl<
                                         }))
                                     }
                                     Err(err) => {
-                                        Err(CacheLoadingError::FutureJoinError(err))
+                                        Err(CacheLoadingError::CommunicationError(CacheCommunicationError::FutureJoinError(err)))
                                     }
                                 }
                             }
@@ -306,12 +343,12 @@ impl<
                         }
                     }
                     Err(err) => {
-                        Err(CacheLoadingError::TokioOneshotRecvError(err))
+                        Err(CacheLoadingError::CommunicationError(CacheCommunicationError::TokioOneshotRecvError(err)))
                     }
                 }
             }
             Err(_) => {
-                Err(CacheLoadingError::TokioMpscSendError())
+                Err(CacheLoadingError::CommunicationError(CacheCommunicationError::TokioMpscSendError()))
             }
         }
     }
