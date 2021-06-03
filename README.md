@@ -20,11 +20,11 @@ async fn main() {
     let (cache, _) = LoadingCache::new(move |key: String| {
         let db_clone = static_db.clone();
         async move {
-            db_clone.get(&key).cloned()
+            db_clone.get(&key).cloned().ok_or(LoadingError::new(1))
         }
     });
 
-    let result = cache.get("foo".to_owned()).await.unwrap();
+    let result = cache.get("foo".to_owned()).await.unwrap().0;
 
     assert_eq!(result, 32);
 }
@@ -36,6 +36,10 @@ get requests until the load request finishes.
 
 # Features & Cache Backings
 
+The cache-loader-async library currently supports two additional inbuilt backings: LRU & TTL
+LRU evicts keys based on the cache maximum size, while TTL evicts keys automatically after their TTL expires.
+
+## LRU Backing
 You can use a simple pre-built LRU cache from the [lru-rs crate](https://github.com/jeromefroe/lru-rs) by enabling 
 the `lru-cache` feature.
 
@@ -46,7 +50,23 @@ async fn main() {
     let size: usize = 10;
     let (cache, _) = LoadingCache::with_backing(LruCacheBacking::new(size), move |key: String| {
         async move {
-            Some(key.to_lowercase())
+            Ok(key.to_lowercase())
+        }
+    });
+}
+```
+
+## TTL Backing
+You can use a simple pre-build TTL cache by enabling the `ttl-cache` feature. This will not require any 
+additional dependencies.
+
+To create a LoadingCache with ttl cache backing use the `with_backing` method on the LoadingCache.
+```rust
+async fn main() {
+    let duration: Duration = Duration::from_secs(30);
+    let (cache, _) = LoadingCache::with_backing(TtlCacheBacking::new(duration), move |key: String| {
+        async move {
+            Ok(key.to_lowercase())
         }
     });
 }
