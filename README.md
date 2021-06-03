@@ -20,7 +20,7 @@ async fn main() {
     let (cache, _) = LoadingCache::new(move |key: String| {
         let db_clone = static_db.clone();
         async move {
-            db_clone.get(&key).cloned().ok_or(LoadingError::new(1))
+            db_clone.get(&key).cloned().ok_or("error-message")
         }
     });
 
