@@ -1,3 +1,10 @@
+# v0.1.1
+* Add additional helper methods
+  - update_if_exists
+  - update_mut_if_exists
+  - remove_if
+* Change Backing Trait to support `remove_if`. This might be breaking if you have a custom backing.
+
 # v0.1.0
 * Add ttl-cache feature
 * \[Breaking] Return type of the loader function changed from Optional<T> to Result<T, E>
