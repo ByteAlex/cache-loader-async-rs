@@ -285,6 +285,38 @@ async fn test_remove() {
 }
 
 #[tokio::test]
+async fn test_remove_if() {
+    let (cache, _) = LoadingCache::new(move |key: u64| {
+        async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            Ok(key * 2)
+        }
+    });
+    let cache: LoadingCache<u64, u64, u8> = cache;
+
+    cache.set(1, 2).await.ok();
+    cache.set(2, 4).await.ok();
+    cache.set(3, 6).await.ok();
+    cache.set(4, 8).await.ok();
+    cache.set(5, 10).await.ok();
+
+    assert!(cache.get_if_present(1).await.unwrap().is_some());
+    assert!(cache.get_if_present(2).await.unwrap().is_some());
+    assert!(cache.get_if_present(3).await.unwrap().is_some());
+    assert!(cache.get_if_present(4).await.unwrap().is_some());
+    assert!(cache.get_if_present(5).await.unwrap().is_some());
+
+    cache.remove_if(|(k, _)| k > &3).await.unwrap();
+
+    assert!(cache.get_if_present(1).await.unwrap().is_some());
+    assert!(cache.get_if_present(2).await.unwrap().is_some());
+    assert!(cache.get_if_present(3).await.unwrap().is_some());
+    // next two should be none after remove
+    assert!(cache.get_if_present(4).await.unwrap().is_none());
+    assert!(cache.get_if_present(5).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn test_load_error() {
     let (cache, _) = LoadingCache::new(move |_key: String| {
         async move {
