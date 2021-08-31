@@ -1,4 +1,6 @@
 # cache-loader-async
+[![Tests](https://github.com/ZeroTwo-Bot/cache-loader-async-rs/actions/workflows/rust.yml/badge.svg?branch=master&event=push)](https://github.com/ZeroTwo-Bot/cache-loader-async-rs/actions/workflows/rust.yml)
+
 [crates.io](https://crates.io/crates/cache_loader_async)
 
 The goal of this crate is to provide a thread-safe and easy way to access any data structure
@@ -84,5 +86,6 @@ pub trait CacheBacking<K, V>
     fn set(&mut self, key: K, value: V) -> Option<V>;
     fn remove(&mut self, key: &K) -> Option<V>;
     fn contains_key(&self, key: &K) -> bool;
+    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send + 'static>);
 }
 ```
