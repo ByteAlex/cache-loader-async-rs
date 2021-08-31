@@ -17,6 +17,7 @@ pub trait CacheBacking<K, V>
     fn set(&mut self, key: K, value: V) -> Option<V>;
     fn remove(&mut self, key: &K) -> Option<V>;
     fn contains_key(&self, key: &K) -> bool;
+    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send + 'static>);
 }
 
 #[cfg(feature = "lru-cache")]
@@ -47,6 +48,22 @@ impl<
 
     fn contains_key(&self, key: &K) -> bool {
         self.lru.contains(&key.clone())
+    }
+
+    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send>) {
+        let keys = self.lru.iter()
+            .filter_map(|(key, value)| {
+                if predicate((key, value)) {
+                    Some(key)
+                } else {
+                    None
+                }
+            })
+            .cloned()
+            .collect::<Vec<K>>();
+        for key in keys.into_iter(){
+            self.lru.pop(&key);
+        }
     }
 }
 
@@ -118,6 +135,23 @@ impl<
             .filter(|(_, expiry)| SystemTime::now().lt(expiry))
             .is_some()
     }
+
+    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send>) {
+        let keys = self.map.iter()
+            .filter_map(|(key, (value, _))| {
+                if predicate((key, value)) {
+                    Some(key)
+                } else {
+                    None
+                }
+            })
+            .cloned()
+            .collect::<Vec<K>>();
+        for key in keys.into_iter() {
+            self.map.remove(&key);
+            self.expiry_queue.retain(|(expiry_key, _)| expiry_key.ne(&key))
+        }
+    }
 }
 
 #[cfg(feature = "ttl-cache")]
@@ -168,6 +202,10 @@ impl<
 
     fn contains_key(&self, key: &K) -> bool {
         self.map.contains_key(key)
+    }
+
+    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send>) {
+        self.map.retain(|k, v| !predicate((k, v)));
     }
 }
 

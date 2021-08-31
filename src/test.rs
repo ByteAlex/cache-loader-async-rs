@@ -162,6 +162,35 @@ async fn test_update() {
     assert_eq!(result, "race_condition".to_owned());
 }
 
+#[tokio::test]
+async fn test_update_if_exists() {
+    let (cache, _) = LoadingCache::new(move |key: String| {
+        async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            Ok(key.to_lowercase())
+        }
+    });
+    let cache: LoadingCache<String, String, u8> = cache;
+    cache.set("test".to_owned(), "test".to_owned()).await.ok();
+
+    let no_value = cache.update_if_exists("test2".to_owned(), |val| {
+        let mut clone = val.clone();
+        clone.push_str("test");
+        clone
+    }).await.unwrap();
+
+    let two_test = cache.update_if_exists("test".to_owned(), |val| {
+        let mut clone = val.clone();
+        clone.push_str("test");
+        clone
+    }).await.unwrap();
+
+    assert!(no_value.is_none());
+    assert!(two_test.is_some());
+    // returns updated value!
+    assert_eq!(two_test.unwrap(), "testtest");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_update_mut() {
     let (cache, _) = LoadingCache::new(move |key: String| {
@@ -209,6 +238,31 @@ async fn test_update_mut() {
     let result = handle.await.unwrap();
     println!("Result of updating loaded key while setting key manually with append _condition: {}", result);
     assert_eq!(result, "race_condition".to_owned());
+}
+
+#[tokio::test]
+async fn test_update_mut_if_exists() {
+    let (cache, _) = LoadingCache::new(move |key: String| {
+        async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            Ok(key.to_lowercase())
+        }
+    });
+    let cache: LoadingCache<String, String, u8> = cache;
+    cache.set("test".to_owned(), "test".to_owned()).await.ok();
+
+    let no_value = cache.update_mut_if_exists("test2".to_owned(), |val| {
+        val.push_str("test");
+    }).await.unwrap();
+
+    let two_test = cache.update_mut_if_exists("test".to_owned(), |val| {
+        val.push_str("test");
+    }).await.unwrap();
+
+    assert!(no_value.is_none());
+    assert!(two_test.is_some());
+    // returns updated value!
+    assert_eq!(two_test.unwrap(), "testtest");
 }
 
 #[tokio::test]

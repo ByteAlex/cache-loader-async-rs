@@ -84,5 +84,6 @@ pub trait CacheBacking<K, V>
     fn set(&mut self, key: K, value: V) -> Option<V>;
     fn remove(&mut self, key: &K) -> Option<V>;
     fn contains_key(&self, key: &K) -> bool;
+    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send + 'static>);
 }
 ```

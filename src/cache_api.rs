@@ -11,9 +11,10 @@ pub enum CacheLoadingError<E: Debug> {
     #[error(transparent)]
     CommunicationError(CacheCommunicationError),
     #[error("No data found")]
-    NoData(), // todo better handling here? eventually return loadingerror if possible
+    NoData(),
+    // todo better handling here? eventually return loadingerror if possible
     #[error("An error occurred when loading the entity from the loader function")]
-    LoadingError(E)
+    LoadingError(E),
 }
 
 #[derive(Error, Debug)]
@@ -31,7 +32,6 @@ pub enum CacheCommunicationError {
 }
 
 impl<E: Debug> CacheLoadingError<E> {
-
     pub fn as_loading_error(&self) -> Option<&E> {
         match self {
             CacheLoadingError::LoadingError(error) => Some(error),
@@ -204,6 +204,18 @@ impl<
             .map(|meta| meta.result)
     }
 
+    /// Retrieves or loads the value for specified key from either cache or loader function with
+    /// meta information, i.e. if the key was loaded from cache or from the loader function
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key which should be loaded
+    ///
+    /// # Return Value
+    ///
+    /// Returns a Result with:
+    /// Ok - Value of type ResultMeta<V>
+    /// Err - Error of type CacheLoadingError
     pub async fn get_with_meta(&self, key: K) -> Result<ResultMeta<V>, CacheLoadingError<E>> {
         self.send_cache_action(CacheAction::Get(key)).await
             .map(|opt_result| opt_result.expect("Get should always return either V or CacheLoadingError"))
@@ -277,7 +289,23 @@ impl<
             .map(|opt_meta| opt_meta.map(|meta| meta.result))
     }
 
-    /// Updates a key on the cache with the given update function and returns the previous value
+    /// Removes all entries which match the specified predicate
+    ///
+    /// # Arguments
+    ///
+    /// * `predicate` - The predicate to test all entries against
+    ///
+    /// # Return Value
+    ///
+    /// Returns a Result with:
+    /// Ok - Nothing, the removed values are discarded
+    /// Err - Error of type CacheLoadingError -> the values were not discarded
+    pub async fn remove_if<P: Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>(&self, predicate: P) -> Result<(), CacheLoadingError<E>> {
+        self.send_cache_action(CacheAction::RemoveIf(Box::pin(predicate))).await
+            .map(|_| ())
+    }
+
+    /// Updates a key on the cache with the given update function and returns the updated value
     ///
     /// If the key is not present yet, it'll be loaded using the loader function and will be
     /// updated once this loader function completes.
@@ -298,16 +326,80 @@ impl<
     /// Err - Error of type CacheLoadingError
     pub async fn update<U>(&self, key: K, update_fn: U) -> Result<V, CacheLoadingError<E>>
         where U: FnOnce(V) -> V + Send + 'static {
-        self.send_cache_action(CacheAction::Update(key, Box::new(update_fn))).await
+        self.send_cache_action(CacheAction::Update(key, Box::new(update_fn), true)).await
             .map(|opt_result| opt_result.expect("Get should always return either V or CacheLoadingError"))
             .map(|meta| meta.result)
     }
 
+    /// Updates a key on the cache with the given update function and returns the updated value if
+    /// it existed
+    ///
+    /// If the key is not present yet, it'll be ignored. This also counts for keys in LOADING state.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key which should be updated
+    /// * `update_fn` - A `FnOnce(V) -> V` which has the current value as parameter and should
+    ///                 return the updated value
+    ///
+    /// # Return Value
+    ///
+    /// Returns a Result with:
+    /// Ok - Optional value of type V which is the previously mapped value
+    /// Err - Error of type CacheLoadingError
+    pub async fn update_if_exists<U>(&self, key: K, update_fn: U) -> Result<Option<V>, CacheLoadingError<E>>
+        where U: FnOnce(V) -> V + Send + 'static {
+        self.send_cache_action(CacheAction::Update(key, Box::new(update_fn), false)).await
+            .map(|opt| opt.map(|meta| meta.result))
+    }
+
+    /// Updates a key on the cache with the given update function and returns the updated value
+    ///
+    /// If the key is not present yet, it'll be loaded using the loader function and will be
+    /// updated once this loader function completes.
+    /// In case the key was manually updated via `set` during the loader function the update will
+    /// take place on the manually updated value, so user-controlled input takes precedence over
+    /// the loader function
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key which should be updated
+    /// * `update_fn` - A `FnMut(&mut V) -> ()` which has the current value as parameter and should
+    ///                 update it accordingly
+    ///
+    /// # Return Value
+    ///
+    /// Returns a Result with:
+    /// Ok - Value of type V
+    /// Err - Error of type CacheLoadingError
     pub async fn update_mut<U>(&self, key: K, update_fn: U) -> Result<V, CacheLoadingError<E>>
         where U: FnMut(&mut V) -> () + Send + 'static {
-        self.send_cache_action(CacheAction::UpdateMut(key, Box::new(update_fn))).await
+        self.send_cache_action(CacheAction::UpdateMut(key, Box::new(update_fn), true)).await
             .map(|opt_result| opt_result.expect("Get should always return either V or CacheLoadingError"))
             .map(|meta| meta.result)
+    }
+
+    /// Updates a key on the cache with the given update function and returns the updated value if
+    /// it existed
+    ///
+    /// If the key is not present yet, it'll be ignored.
+    /// Keys in LOADING state will still be updated as they get available.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key which should be updated
+    /// * `update_fn` - A `FnMut(&mut V) -> ()` which has the current value as parameter and should
+    ///                 update it accordingly
+    ///
+    /// # Return Value
+    ///
+    /// Returns a Result with:
+    /// Ok - Optional value of type V
+    /// Err - Error of type CacheLoadingError
+    pub async fn update_mut_if_exists<U>(&self, key: K, update_fn: U) -> Result<Option<V>, CacheLoadingError<E>>
+        where U: FnMut(&mut V) -> () + Send + 'static {
+        self.send_cache_action(CacheAction::UpdateMut(key, Box::new(update_fn), false)).await
+            .map(|opt| opt.map(|meta| meta.result))
     }
 
     async fn send_cache_action(&self, action: CacheAction<K, V>) -> Result<Option<ResultMeta<V>>, CacheLoadingError<E>> {

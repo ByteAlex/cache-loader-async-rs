@@ -4,14 +4,17 @@ use tokio::task::JoinHandle;
 use crate::cache_api::{CacheResult, CacheLoadingError, CacheEntry, CacheCommunicationError};
 use crate::backing::CacheBacking;
 use std::fmt::Debug;
+use std::pin::Pin;
+use std::sync::Arc;
 
 pub(crate) enum CacheAction<K, V> {
     GetIfPresent(K),
     Get(K),
     Set(K, V),
-    Update(K, Box<dyn FnOnce(V) -> V + Send + 'static>),
-    UpdateMut(K, Box<dyn FnMut(&mut V) -> () + Send + 'static>),
+    Update(K, Box<dyn FnOnce(V) -> V + Send + 'static>, bool),
+    UpdateMut(K, Box<dyn FnMut(&mut V) -> () + Send + 'static>, bool),
     Remove(K),
+    RemoveIf(Pin<Box<dyn Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>>),
     // Internal use
     SetAndUnblock(K, V),
     Unblock(K),
@@ -57,9 +60,10 @@ impl<
                         CacheAction::GetIfPresent(key) => self.get_if_present(key),
                         CacheAction::Get(key) => self.get(key),
                         CacheAction::Set(key, value) => self.set(key, value, false),
-                        CacheAction::Update(key, update_fn) => self.update(key, update_fn),
-                        CacheAction::UpdateMut(key, update_mut_fn) => self.update_mut(key, update_mut_fn),
+                        CacheAction::Update(key, update_fn, load) => self.update(key, update_fn, load),
+                        CacheAction::UpdateMut(key, update_mut_fn, load) => self.update_mut(key, update_mut_fn, load),
                         CacheAction::Remove(key) => self.remove(key),
+                        CacheAction::RemoveIf(predicate) => self.remove_if(predicate),
                         CacheAction::SetAndUnblock(key, value) => self.set(key, value, true),
                         CacheAction::Unblock(key) => {
                             self.unblock(key);
@@ -95,7 +99,29 @@ impl<
         }
     }
 
-    fn update_mut(&mut self, key: K, mut update_mut_fn: Box<dyn FnMut(&mut V) -> () + Send + 'static>) -> CacheResult<V, E> {
+    fn remove_if(&mut self, predicate: Pin<Box<dyn Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>>) -> CacheResult<V, E> {
+        // todo: Do we really need ArcPinBox or did I just fuck up?
+        let predicate = Arc::new(predicate);
+        self.data.remove_if(self.to_predicate(predicate));
+        CacheResult::None
+    }
+
+    fn to_predicate(&self, inner_predicate: Arc<Pin<Box<dyn Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>>>)
+                    -> Box<dyn Fn((&K, &CacheEntry<V, E>)) -> bool + Send + Sync + 'static> {
+        Box::new(move |(key, value)| {
+            let predicate = inner_predicate.clone();
+            match value {
+                CacheEntry::Loaded(value) => {
+                    predicate.as_ref()((key, Some(value)))
+                }
+                CacheEntry::Loading(_) => {
+                    predicate.as_ref()((key, None))
+                }
+            }
+        })
+    }
+
+    fn update_mut(&mut self, key: K, mut update_mut_fn: Box<dyn FnMut(&mut V) -> () + Send + 'static>, load: bool) -> CacheResult<V, E> {
         match self.data.get_mut(&key) {
             Some(entry) => {
                 match entry {
@@ -110,7 +136,7 @@ impl<
                             rx.recv().await.ok(); // result confirmed
                             let (response_tx, response_rx) = tokio::sync::oneshot::channel();
                             cache_tx.send(CacheMessage {
-                                action: CacheAction::UpdateMut(key, update_mut_fn),
+                                action: CacheAction::UpdateMut(key, update_mut_fn, load),
                                 response: response_tx,
                             }).await.ok();
                             match response_rx.await.unwrap() {
@@ -122,31 +148,41 @@ impl<
                 }
             }
             None => {
-                let result = self.get(key.clone());
-                match result {
-                    CacheResult::Loading(waiter) => {
-                        let cache_tx = self.tx.clone();
-                        CacheResult::Loading(tokio::spawn(async move {
-                            waiter.await.ok(); // result confirmed
-                            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-                            cache_tx.send(CacheMessage {
-                                action: CacheAction::UpdateMut(key, update_mut_fn),
-                                response: response_tx,
-                            }).await.ok();
-                            match response_rx.await.unwrap() {
-                                CacheResult::Found(data) => Ok(data),
-                                _ => Err(CacheLoadingError::NoData())
-                            }
-                        }))
+                if load {
+                    let result = self.get(key.clone());
+                    match result {
+                        CacheResult::Loading(waiter) => {
+                            let cache_tx = self.tx.clone();
+                            CacheResult::Loading(tokio::spawn(async move {
+                                waiter.await.ok(); // result confirmed
+                                let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+                                cache_tx.send(CacheMessage {
+                                    action: CacheAction::UpdateMut(key, update_mut_fn, load),
+                                    response: response_tx,
+                                }).await.ok();
+                                match response_rx.await.unwrap() {
+                                    CacheResult::Found(data) => Ok(data),
+                                    _ => Err(CacheLoadingError::NoData())
+                                }
+                            }))
+                        }
+                        _ => CacheResult::None,
                     }
-                    _ => CacheResult::None,
+                } else {
+                    CacheResult::None
                 }
             }
         }
     }
 
-    fn update(&mut self, key: K, update_fn: Box<dyn FnOnce(V) -> V + Send + 'static>) -> CacheResult<V, E> {
-        match self.get(key.clone()) {
+    fn update(&mut self, key: K, update_fn: Box<dyn FnOnce(V) -> V + Send + 'static>, load: bool) -> CacheResult<V, E> {
+        let data = if load {
+            self.get(key.clone())
+        } else {
+            self.get_if_present(key.clone())
+        };
+
+        match data {
             CacheResult::Found(data) => {
                 let updated_data = update_fn(data);
                 self.data.set(key, CacheEntry::Loaded(updated_data.clone()));
@@ -161,7 +197,7 @@ impl<
                     // todo: is there a possibility that this loops forever?
                     let (response_tx, rx) = tokio::sync::oneshot::channel();
                     tx.send(CacheMessage {
-                        action: CacheAction::Update(key, update_fn),
+                        action: CacheAction::Update(key, update_fn, load),
                         response: response_tx,
                     }).await.ok();
                     match rx.await {
