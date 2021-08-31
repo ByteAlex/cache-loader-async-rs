@@ -1,4 +1,6 @@
 # cache-loader-async
+[![Tests](https://github.com/ZeroTwo-Bot/cache-loader-async-rs/actions/workflows/rust.yml/badge.svg?branch=master&event=push)](https://github.com/ZeroTwo-Bot/cache-loader-async-rs/actions/workflows/rust.yml)
+
 [crates.io](https://crates.io/crates/cache_loader_async)
 
 The goal of this crate is to provide a thread-safe and easy way to access any data structure
