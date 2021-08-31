@@ -4,8 +4,6 @@ use tokio::task::JoinHandle;
 use crate::cache_api::{CacheResult, CacheLoadingError, CacheEntry, CacheCommunicationError};
 use crate::backing::CacheBacking;
 use std::fmt::Debug;
-use std::pin::Pin;
-use std::sync::Arc;
 
 pub(crate) enum CacheAction<K, V> {
     GetIfPresent(K),
@@ -14,7 +12,7 @@ pub(crate) enum CacheAction<K, V> {
     Update(K, Box<dyn FnOnce(V) -> V + Send + 'static>, bool),
     UpdateMut(K, Box<dyn FnMut(&mut V) -> () + Send + 'static>, bool),
     Remove(K),
-    RemoveIf(Pin<Box<dyn Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>>),
+    RemoveIf(Box<dyn Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>),
     // Internal use
     SetAndUnblock(K, V),
     Unblock(K),
@@ -99,23 +97,20 @@ impl<
         }
     }
 
-    fn remove_if(&mut self, predicate: Pin<Box<dyn Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>>) -> CacheResult<V, E> {
-        // todo: Do we really need ArcPinBox or did I just fuck up?
-        let predicate = Arc::new(predicate);
+    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>) -> CacheResult<V, E> {
         self.data.remove_if(self.to_predicate(predicate));
         CacheResult::None
     }
 
-    fn to_predicate(&self, inner_predicate: Arc<Pin<Box<dyn Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>>>)
+    fn to_predicate(&self, predicate: Box<dyn Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>)
                     -> Box<dyn Fn((&K, &CacheEntry<V, E>)) -> bool + Send + Sync + 'static> {
         Box::new(move |(key, value)| {
-            let predicate = inner_predicate.clone();
             match value {
                 CacheEntry::Loaded(value) => {
-                    predicate.as_ref()((key, Some(value)))
+                    predicate((key, Some(value)))
                 }
                 CacheEntry::Loading(_) => {
-                    predicate.as_ref()((key, None))
+                    predicate((key, None))
                 }
             }
         })

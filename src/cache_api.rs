@@ -301,7 +301,7 @@ impl<
     /// Ok - Nothing, the removed values are discarded
     /// Err - Error of type CacheLoadingError -> the values were not discarded
     pub async fn remove_if<P: Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>(&self, predicate: P) -> Result<(), CacheLoadingError<E>> {
-        self.send_cache_action(CacheAction::RemoveIf(Box::pin(predicate))).await
+        self.send_cache_action(CacheAction::RemoveIf(Box::new(predicate))).await
             .map(|_| ())
     }
 
