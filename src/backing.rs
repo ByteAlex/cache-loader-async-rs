@@ -7,8 +7,7 @@ use std::collections::VecDeque;
 #[cfg(feature = "ttl-cache")]
 use std::ops::Add;
 #[cfg(feature = "ttl-cache")]
-use tokio::time::Instant;
-use tokio::time::Duration;
+use tokio::time::{Instant, Duration};
 
 pub trait CacheBacking<K, V>
     where K: Eq + Hash + Sized + Clone + Send,
