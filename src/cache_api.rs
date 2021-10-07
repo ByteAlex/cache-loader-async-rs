@@ -80,8 +80,6 @@ pub enum CacheResult<V, E: Debug> {
     None,
 }
 
-pub type CacheHandle = JoinHandle<()>;
-
 #[derive(Debug, Clone)]
 pub struct LoadingCache<K, V, E: Debug> {
     tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E>>
@@ -116,7 +114,7 @@ impl<
     ///             .into_iter()
     ///             .collect();
     ///
-    ///     let (cache, _) = LoadingCache::new(move |key: String| {
+    ///     let cache = LoadingCache::new(move |key: String| {
     ///         let db_clone = static_db.clone();
     ///         async move {
     ///             db_clone.get(&key).cloned().ok_or(1)
@@ -128,7 +126,7 @@ impl<
     ///     assert_eq!(result, 32);
     /// }
     /// ```
-    pub fn new<T, F>(loader: T) -> (LoadingCache<K, V, E>, CacheHandle)
+    pub fn new<T, F>(loader: T) -> LoadingCache<K, V, E>
         where F: Future<Output=Result<V, E>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static {
         LoadingCache::with_backing(HashMapBacking::new(), loader)
@@ -160,7 +158,7 @@ impl<
     ///             .into_iter()
     ///             .collect();
     ///
-    ///     let (cache, _) = LoadingCache::with_backing(
+    ///     let cache = LoadingCache::with_backing(
     ///         HashMapBacking::new(), // this is the default implementation of `new`
     ///         move |key: String| {
     ///             let db_clone = static_db.clone();
@@ -175,16 +173,16 @@ impl<
     ///     assert_eq!(result, 32);
     /// }
     /// ```
-    pub fn with_backing<T, F, B>(backing: B, loader: T) -> (LoadingCache<K, V, E>, CacheHandle)
+    pub fn with_backing<T, F, B>(backing: B, loader: T) -> LoadingCache<K, V, E>
         where F: Future<Output=Result<V, E>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static,
               B: CacheBacking<K, CacheEntry<V, E>> + Send + 'static {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         let store = InternalCacheStore::new(backing, tx.clone(), loader);
-        let handle = store.run(rx);
-        (LoadingCache {
+        store.run(rx); // we're discarding the handle, we never do unsafe stuff, so it can't error, right?
+        LoadingCache {
             tx
-        }, handle)
+        }
     }
 
     /// Retrieves or loads the value for specified key from either cache or loader function
@@ -302,6 +300,18 @@ impl<
     /// Err - Error of type CacheLoadingError -> the values were not discarded
     pub async fn remove_if<P: Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>(&self, predicate: P) -> Result<(), CacheLoadingError<E>> {
         self.send_cache_action(CacheAction::RemoveIf(Box::new(predicate))).await
+            .map(|_| ())
+    }
+
+    /// Removes all entries from the underlying backing
+    ///
+    /// # Return Value
+    ///
+    /// Returns a Result with:
+    /// Ok - Nothing, the removed values are discarded
+    /// Err - Error of type CacheLoadingError -> the values were not discarded
+    pub async fn clear(&self) -> Result<(), CacheLoadingError<E>> {
+        self.send_cache_action(CacheAction::Clear()).await
             .map(|_| ())
     }
 

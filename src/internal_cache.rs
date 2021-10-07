@@ -13,6 +13,7 @@ pub(crate) enum CacheAction<K, V> {
     UpdateMut(K, Box<dyn FnMut(&mut V) -> () + Send + 'static>, bool),
     Remove(K),
     RemoveIf(Box<dyn Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>),
+    Clear(),
     // Internal use
     SetAndUnblock(K, V),
     Unblock(K),
@@ -62,6 +63,7 @@ impl<
                         CacheAction::UpdateMut(key, update_mut_fn, load) => self.update_mut(key, update_mut_fn, load),
                         CacheAction::Remove(key) => self.remove(key),
                         CacheAction::RemoveIf(predicate) => self.remove_if(predicate),
+                        CacheAction::Clear() => self.clear(),
                         CacheAction::SetAndUnblock(key, value) => self.set(key, value, true),
                         CacheAction::Unblock(key) => {
                             self.unblock(key);
@@ -114,6 +116,11 @@ impl<
                 }
             }
         })
+    }
+
+    fn clear(&mut self) -> CacheResult<V, E> {
+        self.data.clear();
+        CacheResult::None
     }
 
     fn update_mut(&mut self, key: K, mut update_mut_fn: Box<dyn FnMut(&mut V) -> () + Send + 'static>, load: bool) -> CacheResult<V, E> {

@@ -18,6 +18,7 @@ pub trait CacheBacking<K, V>
     fn remove(&mut self, key: &K) -> Option<V>;
     fn contains_key(&self, key: &K) -> bool;
     fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send + 'static>);
+    fn clear(&mut self);
 }
 
 #[cfg(feature = "lru-cache")]
@@ -61,9 +62,13 @@ impl<
             })
             .cloned()
             .collect::<Vec<K>>();
-        for key in keys.into_iter(){
+        for key in keys.into_iter() {
             self.lru.pop(&key);
         }
+    }
+
+    fn clear(&mut self) {
+        self.lru.clear();
     }
 }
 
@@ -152,6 +157,11 @@ impl<
             self.expiry_queue.retain(|(expiry_key, _)| expiry_key.ne(&key))
         }
     }
+
+    fn clear(&mut self) {
+        self.expiry_queue.clear();
+        self.map.clear();
+    }
 }
 
 #[cfg(feature = "ttl-cache")]
@@ -206,6 +216,10 @@ impl<
 
     fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send>) {
         self.map.retain(|k, v| !predicate((k, v)));
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
     }
 }
 
