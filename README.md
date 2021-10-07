@@ -19,7 +19,7 @@ async fn main() {
             .into_iter()
             .collect();
     
-    let (cache, _) = LoadingCache::new(move |key: String| {
+    let cache = LoadingCache::new(move |key: String| {
         let db_clone = static_db.clone();
         async move {
             db_clone.get(&key).cloned().ok_or("error-message")
@@ -50,7 +50,7 @@ To create a LoadingCache with lru cache backing use the `with_backing` method on
 ```rust
 async fn main() {
     let size: usize = 10;
-    let (cache, _) = LoadingCache::with_backing(LruCacheBacking::new(size), move |key: String| {
+    let cache = LoadingCache::with_backing(LruCacheBacking::new(size), move |key: String| {
         async move {
             Ok(key.to_lowercase())
         }
@@ -66,7 +66,7 @@ To create a LoadingCache with ttl cache backing use the `with_backing` method on
 ```rust
 async fn main() {
     let duration: Duration = Duration::from_secs(30);
-    let (cache, _) = LoadingCache::with_backing(TtlCacheBacking::new(duration), move |key: String| {
+    let cache = LoadingCache::with_backing(TtlCacheBacking::new(duration), move |key: String| {
         async move {
             Ok(key.to_lowercase())
         }
@@ -87,5 +87,6 @@ pub trait CacheBacking<K, V>
     fn remove(&mut self, key: &K) -> Option<V>;
     fn contains_key(&self, key: &K) -> bool;
     fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send + 'static>);
+    fn clear(&mut self);
 }
 ```

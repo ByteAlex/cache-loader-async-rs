@@ -1,3 +1,13 @@
+# v0.1.2
+New/Changed:
+* Replace SystemTime calls with Instant
+* Implement additional helper method: clear
+* Change new/with_backing signature to return no CacheHandle
+
+Breaking: 
+* Instantiation method signature changed
+* Backing interface extended with "clear method"
+
 # v0.1.1
 * Add additional helper methods
   - update_if_exists
