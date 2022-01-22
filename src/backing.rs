@@ -6,7 +6,6 @@ use lru::LruCache;
 use std::collections::VecDeque;
 #[cfg(feature = "ttl-cache")]
 use std::ops::Add;
-use std::process::id;
 #[cfg(feature = "ttl-cache")]
 use tokio::time::{Instant, Duration};
 
