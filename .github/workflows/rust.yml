@@ -23,5 +23,11 @@ jobs:
     - uses: actions/checkout@v2
     - name: Build
       run: cargo build
-    - name: Run tests
-      run: cargo test --features "ttl-cache","lru-cache"
+    - name: Run tests no-features
+      run: cargo test
+    - name: Run tests lru-feature
+      run: cargo test --features lru-cache
+    - name: Run tests ttl-feature
+      run: cargo test --features ttl-cache
+    - name: Run tests all-features
+      run: cargo test --features lru-cache,ttl-cache
