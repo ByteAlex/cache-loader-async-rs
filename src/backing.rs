@@ -104,6 +104,7 @@ struct TTlEntry<K> {
 
 }
 
+#[cfg(feature = "ttl-cache")]
 impl<K> From<(K, Instant)> for TTlEntry<K> {
     fn from(tuple: (K, Instant)) -> Self {
         Self {
