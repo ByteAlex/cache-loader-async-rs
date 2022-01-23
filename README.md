@@ -74,6 +74,36 @@ async fn main() {
 }
 ```
 
+You can also provide a custom TTL per key, if you use the `with_meta_loader` method.
+Below example will override the global 30s ttl with a 10s ttl.
+Yes, it doesn't make sense to override every key, so you should be having conditions there.
+```rust
+async fn main() {
+    let duration: Duration = Duration::from_secs(30);
+    let cache = LoadingCache::with_meta_loader(TtlCacheBacking::new(duration), move |key: String| {
+        async move {
+            Ok(key.to_lowercase())
+                .with_meta(Some(TtlMeta::from(Duration::from_secs(10))))
+        }
+    });
+}
+```
+
+Additionally, the TTL backing allows you to customize the underlying backing. By default, it's using the 
+`HashMapBacking`.
+
+```rust
+async fn main() {
+    let duration: Duration = Duration::from_secs(30);
+    let cache = LoadingCache::with_meta_loader(TtlCacheBacking::with_backing(LruCacheBacking::new(10), duration), move |key: String| {
+        async move {
+            Ok(key.to_lowercase())
+                .with_meta(Some(TtlMeta::from(Duration::from_secs(10))))
+        }
+    });
+}
+```
+
 ## Own Backing
 
 To implement an own cache backing, simply implement the public `CacheBacking` trait from the `backing` mod.
@@ -82,11 +112,14 @@ To implement an own cache backing, simply implement the public `CacheBacking` tr
 pub trait CacheBacking<K, V>
     where K: Eq + Hash + Sized + Clone + Send,
           V: Sized + Clone + Send {
-    fn get(&mut self, key: &K) -> Option<&V>;
-    fn set(&mut self, key: K, value: V) -> Option<V>;
-    fn remove(&mut self, key: &K) -> Option<V>;
-    fn contains_key(&self, key: &K) -> bool;
-    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send + 'static>);
-    fn clear(&mut self);
+    type Meta: Clone + Send;
+
+    fn get_mut(&mut self, key: &K) -> Result<Option<&mut V>, BackingError>;
+    fn get(&mut self, key: &K) -> Result<Option<&V>, BackingError>;
+    fn set(&mut self, key: K, value: V, meta: Option<Self::Meta>) -> Result<Option<V>, BackingError>;
+    fn remove(&mut self, key: &K) -> Result<Option<V>, BackingError>;
+    fn contains_key(&mut self, key: &K) -> Result<bool, BackingError>;
+    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send + Sync + 'static>) -> Result<Vec<(K, V)>, BackingError>;
+    fn clear(&mut self) -> Result<(), BackingError>;
 }
 ```

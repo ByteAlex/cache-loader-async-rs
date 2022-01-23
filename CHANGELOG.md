@@ -1,3 +1,19 @@
+# v0.2.0
+New/Changed:
+* TTL Backing now uses fewer iterations through the entire list
+* Backings can define a `Meta` type which can be used for improved handling with
+the loader
+* TTL Backing now supports a `TtlMeta` -> Custom duration per entry
+* TTL Backing now supports other nested `CacheBacking`s (i.e. TTL+LRU)
+* New methods: `LoadingCache::with_meta_loader()`, `LoadingCache#set_with_meta`
+
+Breaking:
+* Backings trait changed:
+  1. All methods now return a result
+  2. contains_key takes a mutable self reference
+  3. remove_if returns the removed k/v pairs
+  4. Meta Type added / set signature now has a meta field
+
 # v0.1.2
 New/Changed:
 * Replace SystemTime calls with Instant

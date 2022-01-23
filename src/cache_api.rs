@@ -376,7 +376,29 @@ impl<
     ///
     /// # Arguments
     ///
-    /// * `key` - The key which should be loaded
+    /// * `key` - The key which should be set
+    /// * `value` - The value which should be set
+    /// * `meta` - The meta which should be attached to the key
+    ///
+    /// # Return Value
+    ///
+    /// Returns a Result with:
+    /// Ok - Previous value of type V wrapped in an Option depending whether there was a previous
+    ///      value
+    /// Err - Error of type CacheLoadingError
+    pub async fn set_with_meta(&self, key: K, value: V, meta: Option<B::Meta>) -> Result<Option<V>, CacheLoadingError<E>> {
+        self.send_cache_action(CacheAction::Set(key, value, meta)).await
+            .map(|opt_meta| opt_meta.map(|meta| meta.result))
+    }
+
+    /// Sets the value for specified key and bypasses eventual currently ongoing loads
+    /// If a key has been set programmatically, eventual concurrent loads will not change
+    /// the value of the key.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key which should be set
+    /// * `value` - The value which should be set
     ///
     /// # Return Value
     ///
@@ -385,8 +407,7 @@ impl<
     ///      value
     /// Err - Error of type CacheLoadingError
     pub async fn set(&self, key: K, value: V) -> Result<Option<V>, CacheLoadingError<E>> {
-        self.send_cache_action(CacheAction::Set(key, value, None)).await
-            .map(|opt_meta| opt_meta.map(|meta| meta.result))
+        self.set_with_meta(key, value, None).await
     }
 
     /// Loads the value for the specified key from the cache and returns None if not present
