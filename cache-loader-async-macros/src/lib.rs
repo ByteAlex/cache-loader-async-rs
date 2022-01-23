@@ -101,7 +101,7 @@ pub fn test_with_features(item: proc_macro::TokenStream) -> proc_macro::TokenStr
         #[cfg(feature = "ttl-cache")]
         #[tokio::test]
         async fn #fn_ident_ttl() {
-            let #ident: LoadingCache<#key_type, #value_type, #error_type, TtlCacheBacking<_, _>> = LoadingCache::with_backing(TtlCacheBacking::new(Duration::from_secs(3)), move |key: #key_type| {
+            let #ident: LoadingCache<#key_type, #value_type, #error_type, TtlCacheBacking<_, _, _>> = LoadingCache::with_backing(TtlCacheBacking::new(Duration::from_secs(3)), move |key: #key_type| {
                async move #loader
             });
 
