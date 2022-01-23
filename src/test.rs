@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use crate::cache_api::{LoadingCache, CacheLoadingError};
 use tokio::time::Duration;
+use cache_loader_async_macros::test_with_features;
 #[cfg(feature = "lru-cache")]
 use crate::backing::LruCacheBacking;
 #[cfg(feature = "ttl-cache")]
@@ -11,6 +12,7 @@ pub struct ThingOne(u8);
 
 #[derive(Debug, Clone)]
 pub struct ThingTwo(String);
+
 
 #[tokio::test]
 async fn test_load() {
@@ -51,13 +53,10 @@ async fn test_load() {
     assert_eq!(result_two, "buzz".to_owned());
 }
 
-#[tokio::test]
-async fn test_write() {
-    let cache: LoadingCache<String, String, u8> = LoadingCache::new(move |key: String| {
-        async move {
-            Ok(key.to_lowercase())
-        }
-    });
+test_with_features! {
+    test_write cache <String, String, u8> {
+        Ok(key.to_lowercase())
+    }
 
     let lowercase_result = cache.get("LOL".to_owned()).await.unwrap();
     println!("Result of lowercase loader: {}", lowercase_result);
@@ -70,13 +69,10 @@ async fn test_write() {
     assert_eq!(result, "BIG".to_owned());
 }
 
-#[tokio::test]
-async fn test_get_if_present() {
-    let cache: LoadingCache<String, String, u8> = LoadingCache::new(move |key: String| {
-        async move {
-            Ok(key.to_lowercase())
-        }
-    });
+test_with_features! {
+    get_if_present cache <String, String, u8> {
+        Ok(key.to_lowercase())
+    }
 
     let option = cache.get_if_present("test".to_owned()).await.unwrap();
     assert!(option.is_none());
@@ -87,13 +83,10 @@ async fn test_get_if_present() {
     assert!(option.is_some());
 }
 
-#[tokio::test]
-async fn test_exists() {
-    let cache: LoadingCache<String, String, u8> = LoadingCache::new(move |key: String| {
-        async move {
-            Ok(key.to_lowercase())
-        }
-    });
+test_with_features! {
+    exists cache <String, String, u8> {
+        Ok(key.to_lowercase())
+    }
 
     let exists = cache.exists("test".to_owned()).await.unwrap();
     assert!(!exists);
@@ -158,14 +151,11 @@ async fn test_update() {
     assert_eq!(result, "race_condition".to_owned());
 }
 
-#[tokio::test]
-async fn test_update_if_exists() {
-    let cache: LoadingCache<String, String, u8> = LoadingCache::new(move |key: String| {
-        async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            Ok(key.to_lowercase())
-        }
-    });
+test_with_features! {
+    update_if_exists cache <String, String, u8> {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Ok(key.to_lowercase())
+    }
     cache.set("test".to_owned(), "test".to_owned()).await.ok();
 
     let no_value = cache.update_if_exists("test2".to_owned(), |val| {
@@ -234,14 +224,11 @@ async fn test_update_mut() {
     assert_eq!(result, "race_condition".to_owned());
 }
 
-#[tokio::test]
-async fn test_update_mut_if_exists() {
-    let cache: LoadingCache<String, String, u8> = LoadingCache::new(move |key: String| {
-        async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            Ok(key.to_lowercase())
-        }
-    });
+test_with_features! {
+    update_mut_if_exists cache <String, String, u8> {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Ok(key.to_lowercase())
+    }
     cache.set("test".to_owned(), "test".to_owned()).await.ok();
 
     let no_value = cache.update_mut_if_exists("test2".to_owned(), |val| {
@@ -258,14 +245,11 @@ async fn test_update_mut_if_exists() {
     assert_eq!(two_test.unwrap(), "testtest");
 }
 
-#[tokio::test]
-async fn test_remove() {
-    let cache: LoadingCache<String, String, u8> = LoadingCache::new(move |key: String| {
-        async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            Ok(key.to_lowercase())
-        }
-    });
+test_with_features! {
+    remove cache <String, String, u8> {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Ok(key.to_lowercase())
+    }
 
     cache.set("test".to_owned(), "lol".to_owned()).await.ok();
 
@@ -276,14 +260,12 @@ async fn test_remove() {
     assert_eq!(cache.get("test".to_owned()).await.unwrap(), "test".to_owned());
 }
 
-#[tokio::test]
-async fn test_remove_if() {
-    let cache: LoadingCache<u64, u64, u8> = LoadingCache::new(move |key: u64| {
-        async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            Ok(key * 2)
-        }
-    });
+
+test_with_features! {
+    remove_if cache <u64, u64, u8> {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Ok(key * 2)
+    }
 
     cache.set(1, 2).await.ok();
     cache.set(2, 4).await.ok();
@@ -307,13 +289,11 @@ async fn test_remove_if() {
     assert!(cache.get_if_present(5).await.unwrap().is_none());
 }
 
-#[tokio::test]
-async fn test_load_error() {
-    let cache: LoadingCache<String, String, u8> = LoadingCache::new(move |_key: String| {
-        async move {
-            Err(5)
-        }
-    });
+
+test_with_features! {
+    load_error cache <String, String, u8> {
+        Err(5)
+    }
 
     let cache_loading_error = cache.get("test".to_owned()).await.expect_err("Didn't error, what?");
     if let CacheLoadingError::LoadingError(val) = cache_loading_error {
@@ -323,14 +303,11 @@ async fn test_load_error() {
     }
 }
 
-#[tokio::test]
-async fn test_meta() {
-    let cache: LoadingCache<String, String, u8> = LoadingCache::new(move |key: String| {
-        async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            Ok(key.to_lowercase())
-        }
-    });
+test_with_features! {
+    meta cache <String, String, u8> {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Ok(key.to_lowercase())
+    }
 
     let meta = cache.get_with_meta("key".to_owned()).await.unwrap();
     assert!(!meta.cached);

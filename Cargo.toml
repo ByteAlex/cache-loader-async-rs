@@ -19,6 +19,9 @@ thiserror = "1.0"
 # Optional feature based dependencies
 lru = { version = "0.6.5", optional = true }
 
+[dev-dependencies]
+cache_loader_async_macros = { path = "./cache-loader-async-macros" }
+
 [features]
 default = []
 lru-cache = ["lru"]

@@ -23,7 +23,7 @@ pub trait CacheBacking<K, V>
 
 #[cfg(feature = "lru-cache")]
 pub struct LruCacheBacking<K, V> {
-    lru: LruCache<K, V>
+    lru: LruCache<K, V>,
 }
 
 #[cfg(feature = "lru-cache")]
@@ -93,8 +93,25 @@ impl<
 #[cfg(feature = "ttl-cache")]
 pub struct TtlCacheBacking<K, V> {
     ttl: Duration,
-    expiry_queue: VecDeque<(K, Instant)>,
+    expiry_queue: VecDeque<TTlEntry<K>>,
     map: HashMap<K, (V, Instant)>,
+}
+
+#[cfg(feature = "ttl-cache")]
+struct TTlEntry<K> {
+    key: K,
+    expiry: Instant,
+
+}
+
+#[cfg(feature = "ttl-cache")]
+impl<K> From<(K, Instant)> for TTlEntry<K> {
+    fn from(tuple: (K, Instant)) -> Self {
+        Self {
+            key: tuple.0,
+            expiry: tuple.1,
+        }
+    }
 }
 
 #[cfg(feature = "ttl-cache")]
@@ -117,21 +134,21 @@ impl<
     fn set(&mut self, key: K, value: V) -> Option<V> {
         self.remove_old();
         let expiry = Instant::now().add(self.ttl);
-        let option = self.map.insert(key.clone(), (value, expiry));
-        if option.is_some() {
-            self.expiry_queue.retain(|(vec_key, _)| vec_key.ne(&key));
+        let result = self.replace(key.clone(), value, expiry);
+        match self.expiry_queue.binary_search_by_key(&expiry, |entry| entry.expiry) {
+            Ok(found) => {
+                self.expiry_queue.insert(found + 1, (key, expiry).into());
+            }
+            Err(idx) => {
+                self.expiry_queue.insert(idx, (key, expiry).into());
+            }
         }
-        self.expiry_queue.push_back((key, expiry));
-        option.map(|(value, _)| value)
+        result
     }
 
     fn remove(&mut self, key: &K) -> Option<V> {
         self.remove_old();
-        let option = self.map.remove(key);
-        if option.is_some() {
-            self.expiry_queue.retain(|(vec_key, _)| vec_key.ne(&key));
-        }
-        option.map(|(value, _)| value)
+        self.remove_key(key)
     }
 
     fn contains_key(&self, key: &K) -> bool {
@@ -154,7 +171,8 @@ impl<
             .collect::<Vec<K>>();
         for key in keys.into_iter() {
             self.map.remove(&key);
-            self.expiry_queue.retain(|(expiry_key, _)| expiry_key.ne(&key))
+            // optimize looping through expiry_queue multiple times?
+            self.expiry_queue.retain(|entry| entry.key.ne(&key))
         }
     }
 
@@ -165,7 +183,7 @@ impl<
 }
 
 #[cfg(feature = "ttl-cache")]
-impl<K: Hash + Sized + PartialEq + Eq, V> TtlCacheBacking<K, V> {
+impl<K: Eq + Hash + Sized + Clone + Send, V: Sized + Clone + Send> TtlCacheBacking<K, V> {
     pub fn new(ttl: Duration) -> TtlCacheBacking<K, V> {
         TtlCacheBacking {
             ttl,
@@ -176,18 +194,80 @@ impl<K: Hash + Sized + PartialEq + Eq, V> TtlCacheBacking<K, V> {
 
     fn remove_old(&mut self) {
         let now = Instant::now();
-        while let Some((key, expiry)) = self.expiry_queue.pop_front() {
-            if now.lt(&expiry) {
-                self.expiry_queue.push_front((key, expiry));
+        while let Some(entry) = self.expiry_queue.pop_front() {
+            if now.lt(&entry.expiry) {
+                self.expiry_queue.push_front(entry);
                 break;
             }
-            self.map.remove(&key);
+            self.map.remove(&entry.key);
         }
+    }
+
+    fn replace(&mut self, key: K, value: V, expiry: Instant) -> Option<V> {
+        let entry = self.map.insert(key.clone(), (value, expiry));
+        self.cleanup_expiry(entry, &key)
+    }
+
+    fn remove_key(&mut self, key: &K) -> Option<V> {
+        let entry = self.map.remove(key);
+        self.cleanup_expiry(entry, key)
+    }
+
+    fn cleanup_expiry(&mut self, entry: Option<(V, Instant)>, key: &K) -> Option<V> {
+        if let Some((value, old_expiry)) = entry {
+            match self.expiry_queue.binary_search_by_key(&old_expiry, |entry| entry.expiry) {
+                Ok(found) => {
+                    let index = self.expiry_index_on_key_eq(found, &old_expiry, key);
+                    if let Some(index) = index {
+                        self.expiry_queue.remove(index);
+                    } else {
+                        // expiry not found (key)???
+                    }
+                }
+                Err(_) => {
+                    // expiry not found???
+                }
+            }
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn expiry_index_on_key_eq(&self, idx: usize, expiry: &Instant, key: &K) -> Option<usize> {
+        let entry = self.expiry_queue.get(idx).unwrap();
+        if entry.key.eq(key) {
+            return Some(idx);
+        }
+
+        let mut offset = 0;
+        while idx - offset > 0 {
+            offset += 1;
+            let entry = self.expiry_queue.get(idx - offset).unwrap();
+            if !entry.expiry.eq(expiry) {
+                break;
+            }
+            if entry.key.eq(key) {
+                return Some(idx - offset);
+            }
+        }
+        offset = 0;
+        while idx + offset < self.expiry_queue.len() {
+            offset += 1;
+            let entry = self.expiry_queue.get(idx + offset).unwrap();
+            if !entry.expiry.eq(expiry) {
+                break;
+            }
+            if entry.key.eq(key) {
+                return Some(idx + offset);
+            }
+        }
+        None
     }
 }
 
 pub struct HashMapBacking<K, V> {
-    map: HashMap<K, V>
+    map: HashMap<K, V>,
 }
 
 impl<
