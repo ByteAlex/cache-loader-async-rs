@@ -3,11 +3,13 @@ use std::hash::Hash;
 use futures::Future;
 use thiserror::Error;
 use crate::internal_cache::{CacheAction, InternalCacheStore, CacheMessage};
-use crate::backing::{CacheBacking, HashMapBacking};
-use std::fmt::Debug;
+use crate::backing::{BackingError, CacheBacking, HashMapBacking};
+use std::fmt::{Debug};
 
 #[derive(Error, Debug)]
 pub enum CacheLoadingError<E: Debug> {
+    #[error(transparent)]
+    BackingError(BackingError),
     #[error(transparent)]
     CommunicationError(CacheCommunicationError),
     #[error("No data found")]
@@ -75,21 +77,108 @@ pub enum CacheEntry<V, E: Debug> {
 
 #[derive(Debug)]
 pub enum CacheResult<V, E: Debug> {
+    Error(BackingError),
     Found(V),
     Loading(JoinHandle<Result<V, CacheLoadingError<E>>>),
     None,
 }
 
-#[derive(Debug, Clone)]
-pub struct LoadingCache<K, V, E: Debug> {
-    tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E>>
+#[derive(Debug)]
+pub struct LoadingCache<
+    K: Clone + Eq + Hash + Send,
+    V: Clone + Sized + Send,
+    E: Debug + Clone + Send,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> {
+    tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E, B>>,
+}
+
+// Funnily enough we need to impl Clone ourselves, because it cannot derive Clone for B
+// which ain't 'Clone'. The compiler is smart, but not smart enough to recognize we've been
+// abstracting B behind an actor model with MPSC channels.
+impl<
+    K: Eq + Hash + Clone + Send + 'static,
+    V: Clone + Sized + Send + 'static,
+    E: Clone + Sized + Send + Debug + 'static,
+    B: CacheBacking<K, CacheEntry<V, E>> + Send + 'static,
+> Clone for LoadingCache<K, V, E, B> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone()
+        }
+    }
+}
+
+pub struct DataWithMeta<
+    K: Eq + Hash + Clone + Send,
+    V: Clone + Sized + Send,
+    E: Clone + Sized + Send + Debug,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> {
+    pub(crate) data: V,
+    pub(crate) meta: Option<B::Meta>,
+}
+
+// Since the B trait is not cloneable itself, we also need to manually implement Clone here.
+impl<
+    K: Eq + Hash + Clone + Send,
+    V: Clone + Sized + Send,
+    E: Clone + Sized + Send + Debug,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> Clone for DataWithMeta<K, V, E, B> {
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            meta: self.meta.clone(),
+        }
+    }
+}
+
+impl<
+    K: Eq + Hash + Clone + Send,
+    V: Clone + Sized + Send,
+    E: Clone + Sized + Send + Debug,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> DataWithMeta<K, V, E, B> {
+
+    pub fn new(data: V, meta: Option<B::Meta>) -> Self {
+        Self { data, meta }
+    }
+}
+
+pub trait WithMeta<
+    K: Eq + Hash + Clone + Send,
+    V: Clone + Sized + Send,
+    E: Clone + Sized + Send + Debug,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> {
+    type Type;
+
+    fn with_meta(self, meta: Option<B::Meta>) -> Self::Type;
+}
+
+impl<
+    K: Eq + Hash + Clone + Send,
+    V: Clone + Sized + Send,
+    E: Clone + Sized + Send + Debug,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> WithMeta<K, V, E, B> for Result<V, E> {
+
+    type Type = Result<DataWithMeta<K, V, E, B>, E>;
+
+    fn with_meta(self, meta: Option<B::Meta>) -> Self::Type {
+        match self {
+            Ok(data) => Ok(DataWithMeta::new(data, meta)),
+            Err(err) => Err(err),
+        }
+    }
 }
 
 impl<
     K: Eq + Hash + Clone + Send + 'static,
     V: Clone + Sized + Send + 'static,
     E: Clone + Sized + Send + Debug + 'static,
-> LoadingCache<K, V, E> {
+> LoadingCache<K, V, E, HashMapBacking<K, CacheEntry<V, E>>> {
     /// Creates a new instance of a LoadingCache with the default `HashMapBacking`
     ///
     /// # Arguments
@@ -126,18 +215,26 @@ impl<
     ///     assert_eq!(result, 32);
     /// }
     /// ```
-    pub fn new<T, F>(loader: T) -> LoadingCache<K, V, E>
+    pub fn new<T, F>(loader: T) -> LoadingCache<K, V, E, HashMapBacking<K, CacheEntry<V, E>>>
         where F: Future<Output=Result<V, E>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static {
         LoadingCache::with_backing(HashMapBacking::new(), loader)
     }
+}
 
+
+impl<
+    K: Eq + Hash + Clone + Send + 'static,
+    V: Clone + Sized + Send + 'static,
+    E: Clone + Sized + Send + Debug + 'static,
+    B: CacheBacking<K, CacheEntry<V, E>> + Send + 'static,
+> LoadingCache<K, V, E, B> {
     /// Creates a new instance of a LoadingCache with a custom `CacheBacking`
     ///
     /// # Arguments
     ///
     /// * `backing` - The custom backing which the cache should use
-    /// * `loader` - A function which returns a Future<Output=Option<V>>
+    /// * `loader` - A function which returns a Future<Output=Result<V, E>>
     ///
     /// # Return Value
     ///
@@ -173,10 +270,64 @@ impl<
     ///     assert_eq!(result, 32);
     /// }
     /// ```
-    pub fn with_backing<T, F, B>(backing: B, loader: T) -> LoadingCache<K, V, E>
+    pub fn with_backing<T, F>(backing: B, loader: T) -> LoadingCache<K, V, E, B>
         where F: Future<Output=Result<V, E>> + Sized + Send + 'static,
-              T: Fn(K) -> F + Send + 'static,
-              B: CacheBacking<K, CacheEntry<V, E>> + Send + 'static {
+              T: Fn(K) -> F + Send + 'static {
+        let loader = loader;
+        LoadingCache::with_meta_loader(backing, move |key| {
+            let future = loader(key);
+            async move {
+                future.await.with_meta(None)
+            }
+        })
+    }
+
+    /// Creates a new instance of a LoadingCache with a custom `CacheBacking` and an optional
+    /// `Meta` loader.
+    ///
+    /// # Arguments
+    ///
+    /// * `backing` - The custom backing which the cache should use
+    /// * `loader` - A function which returns a Future<Output=Result<MetaWithData<K, V, E, B>, E>>
+    ///
+    /// # Return Value
+    ///
+    /// This method returns a tuple, with:
+    /// 0 - The instance of the LoadingCache
+    /// 1 - The CacheHandle which is a JoinHandle<()> and represents the task which operates
+    ///     the cache
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cache_loader_async::cache_api::{LoadingCache, WithMeta};
+    /// use std::collections::HashMap;
+    /// use cache_loader_async::backing::HashMapBacking;
+    /// async fn example() {
+    ///     let static_db: HashMap<String, u32> =
+    ///         vec![("foo".into(), 32), ("bar".into(), 64)]
+    ///             .into_iter()
+    ///             .collect();
+    ///
+    ///     let cache = LoadingCache::with_meta_loader(
+    ///         HashMapBacking::new(), // this is the default implementation of `new`
+    ///         move |key: String| {
+    ///             let db_clone = static_db.clone();
+    ///             async move {
+    ///                 db_clone.get(&key).cloned().ok_or(1)
+    ///                     .with_meta(None)
+    ///             }
+    ///         }
+    ///     );
+    ///
+    ///     let result = cache.get("foo".to_owned()).await.unwrap();
+    ///
+    ///     assert_eq!(result, 32);
+    /// }
+    /// ```
+    pub fn with_meta_loader<T, F>(backing: B, loader: T) -> LoadingCache<K, V, E, B>
+        where F: Future<Output=Result<DataWithMeta<K, V, E, B>, E>> + Sized + Send + 'static,
+              T: Fn(K) -> F + Send + 'static {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         let store = InternalCacheStore::new(backing, tx.clone(), loader);
         store.run(rx); // we're discarding the handle, we never do unsafe stuff, so it can't error, right?
@@ -234,7 +385,7 @@ impl<
     ///      value
     /// Err - Error of type CacheLoadingError
     pub async fn set(&self, key: K, value: V) -> Result<Option<V>, CacheLoadingError<E>> {
-        self.send_cache_action(CacheAction::Set(key, value)).await
+        self.send_cache_action(CacheAction::Set(key, value, None)).await
             .map(|opt_meta| opt_meta.map(|meta| meta.result))
     }
 
@@ -336,7 +487,7 @@ impl<
     /// Err - Error of type CacheLoadingError
     pub async fn update<U>(&self, key: K, update_fn: U) -> Result<V, CacheLoadingError<E>>
         where U: FnOnce(V) -> V + Send + 'static {
-        self.send_cache_action(CacheAction::Update(key, Box::new(update_fn), true)).await
+        self.send_cache_action(CacheAction::Update(key, None, Box::new(update_fn), true)).await
             .map(|opt_result| opt_result.expect("Get should always return either V or CacheLoadingError"))
             .map(|meta| meta.result)
     }
@@ -359,7 +510,7 @@ impl<
     /// Err - Error of type CacheLoadingError
     pub async fn update_if_exists<U>(&self, key: K, update_fn: U) -> Result<Option<V>, CacheLoadingError<E>>
         where U: FnOnce(V) -> V + Send + 'static {
-        self.send_cache_action(CacheAction::Update(key, Box::new(update_fn), false)).await
+        self.send_cache_action(CacheAction::Update(key, None, Box::new(update_fn), false)).await
             .map(|opt| opt.map(|meta| meta.result))
     }
 
@@ -412,7 +563,7 @@ impl<
             .map(|opt| opt.map(|meta| meta.result))
     }
 
-    async fn send_cache_action(&self, action: CacheAction<K, V>) -> Result<Option<ResultMeta<V>>, CacheLoadingError<E>> {
+    async fn send_cache_action(&self, action: CacheAction<K, V, E, B>) -> Result<Option<ResultMeta<V>>, CacheLoadingError<E>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         match self.tx.send(CacheMessage {
             action,
@@ -442,6 +593,9 @@ impl<
                                 }
                             }
                             CacheResult::None => { Ok(None) }
+                            CacheResult::Error(err) => {
+                                Err(CacheLoadingError::BackingError(err))
+                            }
                         }
                     }
                     Err(err) => {

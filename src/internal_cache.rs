@@ -1,31 +1,56 @@
 use std::hash::Hash;
 use futures::Future;
 use tokio::task::JoinHandle;
-use crate::cache_api::{CacheResult, CacheLoadingError, CacheEntry, CacheCommunicationError};
+use crate::cache_api::{CacheResult, CacheLoadingError, CacheEntry, CacheCommunicationError, DataWithMeta};
 use crate::backing::CacheBacking;
 use std::fmt::Debug;
 
-pub(crate) enum CacheAction<K, V> {
+macro_rules! unwrap_backing {
+    ($expr:expr) => {
+        match $expr {
+            Ok(data) => data,
+            Err(err) => return CacheResult::Error(err),
+        }
+    }
+}
+
+pub(crate) enum CacheAction<
+    K: Clone + Eq + Hash + Send,
+    V: Clone + Sized + Send,
+    E: Debug + Clone + Send,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> {
     GetIfPresent(K),
     Get(K),
-    Set(K, V),
-    Update(K, Box<dyn FnOnce(V) -> V + Send + 'static>, bool),
+    Set(K, V, Option<B::Meta>),
+    Update(K, Option<B::Meta>, Box<dyn FnOnce(V) -> V + Send + 'static>, bool),
     UpdateMut(K, Box<dyn FnMut(&mut V) -> () + Send + 'static>, bool),
     Remove(K),
     RemoveIf(Box<dyn Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>),
     Clear(),
     // Internal use
-    SetAndUnblock(K, V),
+    SetAndUnblock(K, V, Option<B::Meta>),
     Unblock(K),
 }
 
-pub(crate) struct CacheMessage<K, V, E: Debug> {
-    pub(crate) action: CacheAction<K, V>,
+pub(crate) struct CacheMessage<
+    K: Eq + Hash + Clone + Send,
+    V: Clone + Sized + Send,
+    E: Debug + Clone + Send,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> {
+    pub(crate) action: CacheAction<K, V, E, B>,
     pub(crate) response: tokio::sync::oneshot::Sender<CacheResult<V, E>>,
 }
 
-pub(crate) struct InternalCacheStore<K, V, T, B, E: Debug> {
-    tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E>>,
+pub(crate) struct InternalCacheStore<
+    K: Clone + Eq + Hash + Send,
+    V: Clone + Sized + Send,
+    T,
+    E: Debug + Clone + Send,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> {
+    tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E, B>>,
     data: B,
     loader: T,
 }
@@ -34,14 +59,14 @@ impl<
     K: Eq + Hash + Clone + Send + 'static,
     V: Clone + Sized + Send + 'static,
     E: Clone + Sized + Send + Debug + 'static,
-    F: Future<Output=Result<V, E>> + Sized + Send + 'static,
+    F: Future<Output=Result<DataWithMeta<K, V, E, B>, E>> + Sized + Send + 'static,
     T: Fn(K) -> F + Send + 'static,
     B: CacheBacking<K, CacheEntry<V, E>> + Send + 'static
-> InternalCacheStore<K, V, T, B, E>
+> InternalCacheStore<K, V, T, E, B>
 {
     pub fn new(
         backing: B,
-        tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E>>,
+        tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E, B>>,
         loader: T,
     ) -> Self {
         Self {
@@ -51,24 +76,21 @@ impl<
         }
     }
 
-    pub(crate) fn run(mut self, mut rx: tokio::sync::mpsc::Receiver<CacheMessage<K, V, E>>) -> JoinHandle<()> {
+    pub(crate) fn run(mut self, mut rx: tokio::sync::mpsc::Receiver<CacheMessage<K, V, E, B>>) -> JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 if let Some(message) = rx.recv().await {
                     let result = match message.action {
                         CacheAction::GetIfPresent(key) => self.get_if_present(key),
                         CacheAction::Get(key) => self.get(key),
-                        CacheAction::Set(key, value) => self.set(key, value, false),
-                        CacheAction::Update(key, update_fn, load) => self.update(key, update_fn, load),
+                        CacheAction::Set(key, value, meta) => self.set(key, value, false, meta),
+                        CacheAction::Update(key, meta, update_fn, load) => self.update(key, update_fn, load, meta),
                         CacheAction::UpdateMut(key, update_mut_fn, load) => self.update_mut(key, update_mut_fn, load),
                         CacheAction::Remove(key) => self.remove(key),
                         CacheAction::RemoveIf(predicate) => self.remove_if(predicate),
                         CacheAction::Clear() => self.clear(),
-                        CacheAction::SetAndUnblock(key, value) => self.set(key, value, true),
-                        CacheAction::Unblock(key) => {
-                            self.unblock(key);
-                            CacheResult::None
-                        }
+                        CacheAction::SetAndUnblock(key, value, meta) => self.set(key, value, true, meta),
+                        CacheAction::Unblock(key) => self.unblock(key),
                     };
                     message.response.send(result).ok();
                 }
@@ -76,20 +98,21 @@ impl<
         })
     }
 
-    fn unblock(&mut self, key: K) {
-        if let Some(entry) = self.data.get(&key) {
+    fn unblock(&mut self, key: K) -> CacheResult<V, E>{
+        if let Some(entry) = unwrap_backing!(self.data.get(&key)) {
             if let CacheEntry::Loading(_) = entry {
-                if let Some(entry) = self.data.remove(&key) {
+                if let Some(entry) = unwrap_backing!(self.data.remove(&key)) {
                     if let CacheEntry::Loading(waiter) = entry {
                         std::mem::drop(waiter) // dropping the sender closes the channel
                     }
                 }
             }
         }
+        CacheResult::None
     }
 
     fn remove(&mut self, key: K) -> CacheResult<V, E> {
-        if let Some(entry) = self.data.remove(&key) {
+        if let Some(entry) = unwrap_backing!(self.data.remove(&key)) {
             match entry {
                 CacheEntry::Loaded(data) => CacheResult::Found(data),
                 CacheEntry::Loading(_) => CacheResult::None
@@ -100,7 +123,7 @@ impl<
     }
 
     fn remove_if(&mut self, predicate: Box<dyn Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>) -> CacheResult<V, E> {
-        self.data.remove_if(self.to_predicate(predicate));
+        unwrap_backing!(self.data.remove_if(self.to_predicate(predicate)));
         CacheResult::None
     }
 
@@ -119,12 +142,12 @@ impl<
     }
 
     fn clear(&mut self) -> CacheResult<V, E> {
-        self.data.clear();
+        unwrap_backing!(self.data.clear());
         CacheResult::None
     }
 
     fn update_mut(&mut self, key: K, mut update_mut_fn: Box<dyn FnMut(&mut V) -> () + Send + 'static>, load: bool) -> CacheResult<V, E> {
-        match self.data.get_mut(&key) {
+        match unwrap_backing!(self.data.get_mut(&key)) {
             Some(entry) => {
                 match entry {
                     CacheEntry::Loaded(data) => {
@@ -177,7 +200,7 @@ impl<
         }
     }
 
-    fn update(&mut self, key: K, update_fn: Box<dyn FnOnce(V) -> V + Send + 'static>, load: bool) -> CacheResult<V, E> {
+    fn update(&mut self, key: K, update_fn: Box<dyn FnOnce(V) -> V + Send + 'static>, load: bool, meta: Option<B::Meta>) -> CacheResult<V, E> {
         let data = if load {
             self.get(key.clone())
         } else {
@@ -187,7 +210,7 @@ impl<
         match data {
             CacheResult::Found(data) => {
                 let updated_data = update_fn(data);
-                self.data.set(key, CacheEntry::Loaded(updated_data.clone()));
+                unwrap_backing!(self.data.set(key, CacheEntry::Loaded(updated_data.clone()), meta));
                 CacheResult::Found(updated_data)
             }
             CacheResult::Loading(handle) => {
@@ -196,10 +219,9 @@ impl<
                     handle.await.ok(); // set stupidly await the load to be done
                     // we let the set logic take place which is called from within the future
                     // and we're invoking a second update on the (now cached) data
-                    // todo: is there a possibility that this loops forever?
                     let (response_tx, rx) = tokio::sync::oneshot::channel();
                     tx.send(CacheMessage {
-                        action: CacheAction::Update(key, update_fn, load),
+                        action: CacheAction::Update(key, meta, update_fn, load),
                         response: response_tx,
                     }).await.ok();
                     match rx.await {
@@ -207,19 +229,20 @@ impl<
                             match result {
                                 CacheResult::Found(data) => Ok(data),
                                 CacheResult::Loading(_) => Err(CacheLoadingError::CommunicationError(CacheCommunicationError::LookupLoop())),
-                                CacheResult::None => Err(CacheLoadingError::CommunicationError(CacheCommunicationError::LookupLoop()))
+                                CacheResult::None => Err(CacheLoadingError::CommunicationError(CacheCommunicationError::LookupLoop())),
+                                CacheResult::Error(err) => Err(CacheLoadingError::BackingError(err)),
                             }
                         }
                         Err(err) => Err(CacheLoadingError::CommunicationError(CacheCommunicationError::TokioOneshotRecvError(err))),
                     }
                 }))
             }
-            CacheResult::None => CacheResult::None
+            res => res
         }
     }
 
-    fn set(&mut self, key: K, value: V, loading_result: bool) -> CacheResult<V, E> {
-        let opt_entry = self.data.get(&key);
+    fn set(&mut self, key: K, value: V, loading_result: bool, meta: Option<B::Meta>) -> CacheResult<V, E> {
+        let opt_entry = unwrap_backing!(self.data.get(&key));
         if loading_result {
             if opt_entry.is_none() {
                 return CacheResult::None; // abort mission, key was deleted via remove
@@ -229,7 +252,7 @@ impl<
                 return CacheResult::None; // abort mission, we already have an updated entry!
             }
         }
-        self.data.set(key, CacheEntry::Loaded(value))
+        unwrap_backing!(self.data.set(key, CacheEntry::Loaded(value), meta))
             .and_then(|entry| {
                 match entry {
                     CacheEntry::Loaded(data) => Some(data),
@@ -241,10 +264,10 @@ impl<
     }
 
     fn get_if_present(&mut self, key: K) -> CacheResult<V, E> {
-        if let Some(entry) = self.data.get(&key) {
+        if let Some(entry) = unwrap_backing!(self.data.get(&key)) {
             match entry {
                 CacheEntry::Loaded(data) => CacheResult::Found(data.clone()),
-                CacheEntry::Loading(_) => CacheResult::None, // todo: Are we treating Loading as present or not?
+                CacheEntry::Loading(_) => CacheResult::None,
             }
         } else {
             CacheResult::None
@@ -252,7 +275,7 @@ impl<
     }
 
     fn get(&mut self, key: K) -> CacheResult<V, E> {
-        if let Some(entry) = self.data.get(&key) {
+        if let Some(entry) = unwrap_backing!(self.data.get(&key)) {
             match entry {
                 CacheEntry::Loaded(value) => {
                     CacheResult::Found(value.clone())
@@ -285,11 +308,13 @@ impl<
             let join_handle = tokio::spawn(async move {
                 match loader.await {
                     Ok(value) => {
+                        let meta = value.meta;
+                        let value = value.data;
                         inner_tx.send(Ok(value.clone())).ok();
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         let send_value = value.clone();
                         cache_tx.send(CacheMessage {
-                            action: CacheAction::SetAndUnblock(inner_key, send_value),
+                            action: CacheAction::SetAndUnblock(inner_key, send_value, meta),
                             response: tx,
                         }).await.ok();
                         rx.await.ok(); // await cache confirmation
@@ -307,7 +332,8 @@ impl<
                     }
                 }
             });
-            self.data.set(key, CacheEntry::Loading(tx));
+            // Loading state is set without any meta
+            unwrap_backing!(self.data.set(key, CacheEntry::Loading(tx), None));
             CacheResult::Loading(join_handle)
         }
     }
