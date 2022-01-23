@@ -5,6 +5,7 @@ use lru::LruCache;
 #[cfg(feature = "ttl-cache")]
 use std::collections::VecDeque;
 use std::fmt::Debug;
+#[cfg(feature = "ttl-cache")]
 use std::marker::PhantomData;
 use thiserror::Error;
 #[cfg(feature = "ttl-cache")]
