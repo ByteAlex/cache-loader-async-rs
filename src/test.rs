@@ -397,3 +397,28 @@ async fn test_ttl_backing() {
 
     assert_eq!(cache.exists("key1".to_owned()).await.unwrap(), false);
 }
+
+#[cfg(all(feature = "ttl-cache", feature = "lru-cache"))]
+#[tokio::test]
+async fn test_ttl_lru_backing() {
+    let cache: LoadingCache<String, _, u8, _> = LoadingCache::with_meta_loader(TtlCacheBacking::with_backing(Duration::from_secs(1), LruCacheBacking::new(2)), move |key: String| {
+       async move {
+           if key.len() < 3 {
+               Ok(key.to_lowercase())
+                   .with_meta(Some(TtlMeta::from(Duration::from_secs(15))))
+           } else {
+               Ok(key.to_lowercase())
+                   .with_meta(None)
+           }
+       }
+    });
+    assert_eq!(cache.get("a".to_owned()).await.unwrap(), "a");
+    assert_eq!(cache.get("bbbbb".to_owned()).await.unwrap(), "bbbbb");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(cache.exists("a".to_owned()).await.unwrap());
+    assert!(!cache.exists("bbbbb".to_owned()).await.unwrap());
+    assert_eq!(cache.get("bbbbb".to_owned()).await.unwrap(), "bbbbb");
+    assert_eq!(cache.get("ccccc".to_owned()).await.unwrap(), "ccccc");
+    assert_eq!(cache.get("ddddd".to_owned()).await.unwrap(), "ddddd");
+    assert!(!cache.exists("a".to_owned()).await.unwrap());
+}
