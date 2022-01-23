@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use crate::cache_api::{LoadingCache, CacheLoadingError};
 use tokio::time::Duration;
 use cache_loader_async_macros::test_with_features;
+use crate::backing::HashMapBacking;
 #[cfg(feature = "lru-cache")]
 use crate::backing::LruCacheBacking;
 #[cfg(feature = "ttl-cache")]
@@ -99,7 +100,7 @@ test_with_features! {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_update() {
-    let cache: LoadingCache<String, String, u8> = LoadingCache::new(move |key: String| {
+    let cache: LoadingCache<String, String, u8, HashMapBacking<_, _>> = LoadingCache::new(move |key: String| {
         async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
             Ok(key.to_lowercase())
@@ -178,7 +179,7 @@ test_with_features! {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_update_mut() {
-    let cache: LoadingCache<String, String, u8> = LoadingCache::new(move |key: String| {
+    let cache: LoadingCache<String, String, u8, HashMapBacking<_, _>> = LoadingCache::new(move |key: String| {
         async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
             Ok(key.to_lowercase())
@@ -319,7 +320,7 @@ test_with_features! {
 #[cfg(feature = "lru-cache")]
 #[tokio::test]
 async fn test_lru_backing() {
-    let cache: LoadingCache<String, String, u8> = LoadingCache::with_backing(LruCacheBacking::new(2), move |key: String| {
+    let cache: LoadingCache<_, _, u8, _> = LoadingCache::with_backing(LruCacheBacking::new(2), move |key: String| {
         async move {
             Ok(key.to_lowercase())
         }
@@ -349,7 +350,7 @@ async fn test_lru_backing() {
 #[cfg(feature = "ttl-cache")]
 #[tokio::test]
 async fn test_ttl_backing() {
-    let cache: LoadingCache<String, String, u8> = LoadingCache::with_backing(
+    let cache: LoadingCache<_, _, u8, _> = LoadingCache::with_backing(
         TtlCacheBacking::new(Duration::from_secs(3)), move |key: String| {
             async move {
                 Ok(key.to_lowercase())

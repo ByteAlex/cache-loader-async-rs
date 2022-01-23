@@ -14,7 +14,7 @@ use tokio::time::{Instant, Duration};
 pub trait CacheBacking<K, V>
     where K: Eq + Hash + Sized + Clone + Send,
           V: Sized + Clone + Send {
-    type Meta;
+    type Meta: Send;
 
     fn get_mut(&mut self, key: &K) -> Result<Option<&mut V>, BackingError>;
     fn get(&mut self, key: &K) -> Result<Option<&V>, BackingError>;
@@ -149,7 +149,7 @@ impl<
     K: Eq + Hash + Sized + Clone + Send,
     V: Sized + Clone + Send
 > CacheBacking<K, V> for TtlCacheBacking<K, V> {
-    type Meta = NoMeta;
+    type Meta = TtlMeta;
 
     fn get_mut(&mut self, key: &K) -> Result<Option<&mut V>, BackingError> {
         self.remove_old();
@@ -165,7 +165,12 @@ impl<
 
     fn set(&mut self, key: K, value: V, meta: Option<Self::Meta>) -> Result<Option<V>, BackingError> {
         self.remove_old();
-        let expiry = Instant::now().add(self.ttl);
+        let ttl = if let Some(meta) = meta {
+            meta.ttl
+        } else {
+            self.ttl
+        };
+        let expiry = Instant::now().add(ttl);
         let result = self.replace(key.clone(), value, expiry)?;
         Ok(result)
     }

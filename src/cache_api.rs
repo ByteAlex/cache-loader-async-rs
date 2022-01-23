@@ -4,7 +4,7 @@ use futures::Future;
 use thiserror::Error;
 use crate::internal_cache::{CacheAction, InternalCacheStore, CacheMessage};
 use crate::backing::{BackingError, CacheBacking, HashMapBacking};
-use std::fmt::Debug;
+use std::fmt::{Debug};
 
 #[derive(Error, Debug)]
 pub enum CacheLoadingError<E: Debug> {
@@ -83,16 +83,37 @@ pub enum CacheResult<V, E: Debug> {
     None,
 }
 
-#[derive(Debug, Clone)]
-pub struct LoadingCache<K, V, E: Debug> {
-    tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E>>,
+#[derive(Debug)]
+pub struct LoadingCache<
+    K: Clone + Eq + Hash + Send,
+    V: Clone + Sized + Send,
+    E: Debug + Clone + Send,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> {
+    tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E, B>>,
+}
+
+// Funnily enough we need to impl Clone ourselves, because it cannot derive Clone for B
+// which ain't 'Clone'. The compiler is smart, but not smart enough to recognize we've been
+// abstracting B behind an actor model with MPSC channels.
+impl<
+    K: Eq + Hash + Clone + Send + 'static,
+    V: Clone + Sized + Send + 'static,
+    E: Clone + Sized + Send + Debug + 'static,
+    B: CacheBacking<K, CacheEntry<V, E>> + Send + 'static,
+> Clone for LoadingCache<K, V, E, B> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone()
+        }
+    }
 }
 
 impl<
     K: Eq + Hash + Clone + Send + 'static,
     V: Clone + Sized + Send + 'static,
     E: Clone + Sized + Send + Debug + 'static,
-> LoadingCache<K, V, E> {
+> LoadingCache<K, V, E, HashMapBacking<K, CacheEntry<V, E>>> {
     /// Creates a new instance of a LoadingCache with the default `HashMapBacking`
     ///
     /// # Arguments
@@ -129,12 +150,20 @@ impl<
     ///     assert_eq!(result, 32);
     /// }
     /// ```
-    pub fn new<T, F>(loader: T) -> LoadingCache<K, V, E>
+    pub fn new<T, F>(loader: T) -> LoadingCache<K, V, E, HashMapBacking<K, CacheEntry<V, E>>>
         where F: Future<Output=Result<V, E>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static {
         LoadingCache::with_backing(HashMapBacking::new(), loader)
     }
+}
 
+
+impl<
+    K: Eq + Hash + Clone + Send + 'static,
+    V: Clone + Sized + Send + 'static,
+    E: Clone + Sized + Send + Debug + 'static,
+    B: CacheBacking<K, CacheEntry<V, E>> + Send + 'static,
+> LoadingCache<K, V, E, B> {
     /// Creates a new instance of a LoadingCache with a custom `CacheBacking`
     ///
     /// # Arguments
@@ -176,10 +205,9 @@ impl<
     ///     assert_eq!(result, 32);
     /// }
     /// ```
-    pub fn with_backing<T, F, B>(backing: B, loader: T) -> LoadingCache<K, V, E>
+    pub fn with_backing<T, F>(backing: B, loader: T) -> LoadingCache<K, V, E, B>
         where F: Future<Output=Result<V, E>> + Sized + Send + 'static,
-              T: Fn(K) -> F + Send + 'static,
-              B: CacheBacking<K, CacheEntry<V, E>> + Send + 'static {
+              T: Fn(K) -> F + Send + 'static {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         let store = InternalCacheStore::new(backing, tx.clone(), loader);
         store.run(rx); // we're discarding the handle, we never do unsafe stuff, so it can't error, right?
@@ -237,7 +265,7 @@ impl<
     ///      value
     /// Err - Error of type CacheLoadingError
     pub async fn set(&self, key: K, value: V) -> Result<Option<V>, CacheLoadingError<E>> {
-        self.send_cache_action(CacheAction::Set(key, value)).await
+        self.send_cache_action(CacheAction::Set(key, value, None)).await
             .map(|opt_meta| opt_meta.map(|meta| meta.result))
     }
 
@@ -339,7 +367,7 @@ impl<
     /// Err - Error of type CacheLoadingError
     pub async fn update<U>(&self, key: K, update_fn: U) -> Result<V, CacheLoadingError<E>>
         where U: FnOnce(V) -> V + Send + 'static {
-        self.send_cache_action(CacheAction::Update(key, Box::new(update_fn), true)).await
+        self.send_cache_action(CacheAction::Update(key, None, Box::new(update_fn), true)).await
             .map(|opt_result| opt_result.expect("Get should always return either V or CacheLoadingError"))
             .map(|meta| meta.result)
     }
@@ -362,7 +390,7 @@ impl<
     /// Err - Error of type CacheLoadingError
     pub async fn update_if_exists<U>(&self, key: K, update_fn: U) -> Result<Option<V>, CacheLoadingError<E>>
         where U: FnOnce(V) -> V + Send + 'static {
-        self.send_cache_action(CacheAction::Update(key, Box::new(update_fn), false)).await
+        self.send_cache_action(CacheAction::Update(key, None, Box::new(update_fn), false)).await
             .map(|opt| opt.map(|meta| meta.result))
     }
 
@@ -415,7 +443,7 @@ impl<
             .map(|opt| opt.map(|meta| meta.result))
     }
 
-    async fn send_cache_action(&self, action: CacheAction<K, V>) -> Result<Option<ResultMeta<V>>, CacheLoadingError<E>> {
+    async fn send_cache_action(&self, action: CacheAction<K, V, E, B>) -> Result<Option<ResultMeta<V>>, CacheLoadingError<E>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         match self.tx.send(CacheMessage {
             action,

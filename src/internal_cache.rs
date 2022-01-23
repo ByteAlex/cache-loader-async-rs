@@ -14,27 +14,43 @@ macro_rules! unwrap_backing {
     }
 }
 
-pub(crate) enum CacheAction<K, V> {
+pub(crate) enum CacheAction<
+    K: Clone + Eq + Hash + Send,
+    V: Clone + Sized + Send,
+    E: Debug + Clone + Send,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> {
     GetIfPresent(K),
     Get(K),
-    Set(K, V),
-    Update(K, Box<dyn FnOnce(V) -> V + Send + 'static>, bool),
+    Set(K, V, Option<B::Meta>),
+    Update(K, Option<B::Meta>, Box<dyn FnOnce(V) -> V + Send + 'static>, bool),
     UpdateMut(K, Box<dyn FnMut(&mut V) -> () + Send + 'static>, bool),
     Remove(K),
     RemoveIf(Box<dyn Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>),
     Clear(),
     // Internal use
-    SetAndUnblock(K, V),
+    SetAndUnblock(K, V, Option<B::Meta>),
     Unblock(K),
 }
 
-pub(crate) struct CacheMessage<K, V, E: Debug> {
-    pub(crate) action: CacheAction<K, V>,
+pub(crate) struct CacheMessage<
+    K: Eq + Hash + Clone + Send,
+    V: Clone + Sized + Send,
+    E: Debug + Clone + Send,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> {
+    pub(crate) action: CacheAction<K, V, E, B>,
     pub(crate) response: tokio::sync::oneshot::Sender<CacheResult<V, E>>,
 }
 
-pub(crate) struct InternalCacheStore<K, V, T, B, E: Debug> {
-    tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E>>,
+pub(crate) struct InternalCacheStore<
+    K: Clone + Eq + Hash + Send,
+    V: Clone + Sized + Send,
+    T,
+    E: Debug + Clone + Send,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> {
+    tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E, B>>,
     data: B,
     loader: T,
 }
@@ -46,11 +62,11 @@ impl<
     F: Future<Output=Result<V, E>> + Sized + Send + 'static,
     T: Fn(K) -> F + Send + 'static,
     B: CacheBacking<K, CacheEntry<V, E>> + Send + 'static
-> InternalCacheStore<K, V, T, B, E>
+> InternalCacheStore<K, V, T, E, B>
 {
     pub fn new(
         backing: B,
-        tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E>>,
+        tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E, B>>,
         loader: T,
     ) -> Self {
         Self {
@@ -60,20 +76,20 @@ impl<
         }
     }
 
-    pub(crate) fn run(mut self, mut rx: tokio::sync::mpsc::Receiver<CacheMessage<K, V, E>>) -> JoinHandle<()> {
+    pub(crate) fn run(mut self, mut rx: tokio::sync::mpsc::Receiver<CacheMessage<K, V, E, B>>) -> JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 if let Some(message) = rx.recv().await {
                     let result = match message.action {
                         CacheAction::GetIfPresent(key) => self.get_if_present(key),
                         CacheAction::Get(key) => self.get(key),
-                        CacheAction::Set(key, value) => self.set(key, value, false),
-                        CacheAction::Update(key, update_fn, load) => self.update(key, update_fn, load),
+                        CacheAction::Set(key, value, meta) => self.set(key, value, false, meta),
+                        CacheAction::Update(key, meta, update_fn, load) => self.update(key, update_fn, load, meta),
                         CacheAction::UpdateMut(key, update_mut_fn, load) => self.update_mut(key, update_mut_fn, load),
                         CacheAction::Remove(key) => self.remove(key),
                         CacheAction::RemoveIf(predicate) => self.remove_if(predicate),
                         CacheAction::Clear() => self.clear(),
-                        CacheAction::SetAndUnblock(key, value) => self.set(key, value, true),
+                        CacheAction::SetAndUnblock(key, value, meta) => self.set(key, value, true, meta),
                         CacheAction::Unblock(key) => self.unblock(key),
                     };
                     message.response.send(result).ok();
@@ -184,7 +200,7 @@ impl<
         }
     }
 
-    fn update(&mut self, key: K, update_fn: Box<dyn FnOnce(V) -> V + Send + 'static>, load: bool) -> CacheResult<V, E> {
+    fn update(&mut self, key: K, update_fn: Box<dyn FnOnce(V) -> V + Send + 'static>, load: bool, meta: Option<B::Meta>) -> CacheResult<V, E> {
         let data = if load {
             self.get(key.clone())
         } else {
@@ -194,7 +210,7 @@ impl<
         match data {
             CacheResult::Found(data) => {
                 let updated_data = update_fn(data);
-                unwrap_backing!(self.data.set(key, CacheEntry::Loaded(updated_data.clone()), None)); // todo: meta?
+                unwrap_backing!(self.data.set(key, CacheEntry::Loaded(updated_data.clone()), meta));
                 CacheResult::Found(updated_data)
             }
             CacheResult::Loading(handle) => {
@@ -203,10 +219,9 @@ impl<
                     handle.await.ok(); // set stupidly await the load to be done
                     // we let the set logic take place which is called from within the future
                     // and we're invoking a second update on the (now cached) data
-                    // todo: is there a possibility that this loops forever?
                     let (response_tx, rx) = tokio::sync::oneshot::channel();
                     tx.send(CacheMessage {
-                        action: CacheAction::Update(key, update_fn, load),
+                        action: CacheAction::Update(key, meta, update_fn, load),
                         response: response_tx,
                     }).await.ok();
                     match rx.await {
@@ -226,7 +241,7 @@ impl<
         }
     }
 
-    fn set(&mut self, key: K, value: V, loading_result: bool) -> CacheResult<V, E> {
+    fn set(&mut self, key: K, value: V, loading_result: bool, meta: Option<B::Meta>) -> CacheResult<V, E> {
         let opt_entry = unwrap_backing!(self.data.get(&key));
         if loading_result {
             if opt_entry.is_none() {
@@ -237,7 +252,7 @@ impl<
                 return CacheResult::None; // abort mission, we already have an updated entry!
             }
         }
-        unwrap_backing!(self.data.set(key, CacheEntry::Loaded(value), None)) // todo: meta?
+        unwrap_backing!(self.data.set(key, CacheEntry::Loaded(value), meta))
             .and_then(|entry| {
                 match entry {
                     CacheEntry::Loaded(data) => Some(data),
@@ -252,7 +267,7 @@ impl<
         if let Some(entry) = unwrap_backing!(self.data.get(&key)) {
             match entry {
                 CacheEntry::Loaded(data) => CacheResult::Found(data.clone()),
-                CacheEntry::Loading(_) => CacheResult::None, // todo: Are we treating Loading as present or not?
+                CacheEntry::Loading(_) => CacheResult::None,
             }
         } else {
             CacheResult::None
@@ -297,7 +312,7 @@ impl<
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         let send_value = value.clone();
                         cache_tx.send(CacheMessage {
-                            action: CacheAction::SetAndUnblock(inner_key, send_value),
+                            action: CacheAction::SetAndUnblock(inner_key, send_value, None),
                             response: tx,
                         }).await.ok();
                         rx.await.ok(); // await cache confirmation
@@ -315,7 +330,8 @@ impl<
                     }
                 }
             });
-            unwrap_backing!(self.data.set(key, CacheEntry::Loading(tx), None)); // todo: meta?
+            // Loading state is set without any meta
+            unwrap_backing!(self.data.set(key, CacheEntry::Loading(tx), None));
             CacheResult::Loading(join_handle)
         }
     }
