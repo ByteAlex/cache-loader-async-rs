@@ -5,6 +5,15 @@ use crate::cache_api::{CacheResult, CacheLoadingError, CacheEntry, CacheCommunic
 use crate::backing::CacheBacking;
 use std::fmt::Debug;
 
+macro_rules! unwrap_backing {
+    ($expr:expr) => {
+        match $expr {
+            Ok(data) => data,
+            Err(err) => return CacheResult::Error(err),
+        }
+    }
+}
+
 pub(crate) enum CacheAction<K, V> {
     GetIfPresent(K),
     Get(K),
@@ -65,10 +74,7 @@ impl<
                         CacheAction::RemoveIf(predicate) => self.remove_if(predicate),
                         CacheAction::Clear() => self.clear(),
                         CacheAction::SetAndUnblock(key, value) => self.set(key, value, true),
-                        CacheAction::Unblock(key) => {
-                            self.unblock(key);
-                            CacheResult::None
-                        }
+                        CacheAction::Unblock(key) => self.unblock(key),
                     };
                     message.response.send(result).ok();
                 }
@@ -76,20 +82,21 @@ impl<
         })
     }
 
-    fn unblock(&mut self, key: K) {
-        if let Some(entry) = self.data.get(&key) {
+    fn unblock(&mut self, key: K) -> CacheResult<V, E>{
+        if let Some(entry) = unwrap_backing!(self.data.get(&key)) {
             if let CacheEntry::Loading(_) = entry {
-                if let Some(entry) = self.data.remove(&key) {
+                if let Some(entry) = unwrap_backing!(self.data.remove(&key)) {
                     if let CacheEntry::Loading(waiter) = entry {
                         std::mem::drop(waiter) // dropping the sender closes the channel
                     }
                 }
             }
         }
+        CacheResult::None
     }
 
     fn remove(&mut self, key: K) -> CacheResult<V, E> {
-        if let Some(entry) = self.data.remove(&key) {
+        if let Some(entry) = unwrap_backing!(self.data.remove(&key)) {
             match entry {
                 CacheEntry::Loaded(data) => CacheResult::Found(data),
                 CacheEntry::Loading(_) => CacheResult::None
@@ -100,7 +107,7 @@ impl<
     }
 
     fn remove_if(&mut self, predicate: Box<dyn Fn((&K, Option<&V>)) -> bool + Send + Sync + 'static>) -> CacheResult<V, E> {
-        self.data.remove_if(self.to_predicate(predicate));
+        unwrap_backing!(self.data.remove_if(self.to_predicate(predicate)));
         CacheResult::None
     }
 
@@ -119,12 +126,12 @@ impl<
     }
 
     fn clear(&mut self) -> CacheResult<V, E> {
-        self.data.clear();
+        unwrap_backing!(self.data.clear());
         CacheResult::None
     }
 
     fn update_mut(&mut self, key: K, mut update_mut_fn: Box<dyn FnMut(&mut V) -> () + Send + 'static>, load: bool) -> CacheResult<V, E> {
-        match self.data.get_mut(&key) {
+        match unwrap_backing!(self.data.get_mut(&key)) {
             Some(entry) => {
                 match entry {
                     CacheEntry::Loaded(data) => {
@@ -187,7 +194,7 @@ impl<
         match data {
             CacheResult::Found(data) => {
                 let updated_data = update_fn(data);
-                self.data.set(key, CacheEntry::Loaded(updated_data.clone()));
+                unwrap_backing!(self.data.set(key, CacheEntry::Loaded(updated_data.clone()), None)); // todo: meta?
                 CacheResult::Found(updated_data)
             }
             CacheResult::Loading(handle) => {
@@ -207,19 +214,20 @@ impl<
                             match result {
                                 CacheResult::Found(data) => Ok(data),
                                 CacheResult::Loading(_) => Err(CacheLoadingError::CommunicationError(CacheCommunicationError::LookupLoop())),
-                                CacheResult::None => Err(CacheLoadingError::CommunicationError(CacheCommunicationError::LookupLoop()))
+                                CacheResult::None => Err(CacheLoadingError::CommunicationError(CacheCommunicationError::LookupLoop())),
+                                CacheResult::Error(err) => Err(CacheLoadingError::BackingError(err)),
                             }
                         }
                         Err(err) => Err(CacheLoadingError::CommunicationError(CacheCommunicationError::TokioOneshotRecvError(err))),
                     }
                 }))
             }
-            CacheResult::None => CacheResult::None
+            res => res
         }
     }
 
     fn set(&mut self, key: K, value: V, loading_result: bool) -> CacheResult<V, E> {
-        let opt_entry = self.data.get(&key);
+        let opt_entry = unwrap_backing!(self.data.get(&key));
         if loading_result {
             if opt_entry.is_none() {
                 return CacheResult::None; // abort mission, key was deleted via remove
@@ -229,7 +237,7 @@ impl<
                 return CacheResult::None; // abort mission, we already have an updated entry!
             }
         }
-        self.data.set(key, CacheEntry::Loaded(value))
+        unwrap_backing!(self.data.set(key, CacheEntry::Loaded(value), None)) // todo: meta?
             .and_then(|entry| {
                 match entry {
                     CacheEntry::Loaded(data) => Some(data),
@@ -241,7 +249,7 @@ impl<
     }
 
     fn get_if_present(&mut self, key: K) -> CacheResult<V, E> {
-        if let Some(entry) = self.data.get(&key) {
+        if let Some(entry) = unwrap_backing!(self.data.get(&key)) {
             match entry {
                 CacheEntry::Loaded(data) => CacheResult::Found(data.clone()),
                 CacheEntry::Loading(_) => CacheResult::None, // todo: Are we treating Loading as present or not?
@@ -252,7 +260,7 @@ impl<
     }
 
     fn get(&mut self, key: K) -> CacheResult<V, E> {
-        if let Some(entry) = self.data.get(&key) {
+        if let Some(entry) = unwrap_backing!(self.data.get(&key)) {
             match entry {
                 CacheEntry::Loaded(value) => {
                     CacheResult::Found(value.clone())
@@ -307,7 +315,7 @@ impl<
                     }
                 }
             });
-            self.data.set(key, CacheEntry::Loading(tx));
+            unwrap_backing!(self.data.set(key, CacheEntry::Loading(tx), None)); // todo: meta?
             CacheResult::Loading(join_handle)
         }
     }

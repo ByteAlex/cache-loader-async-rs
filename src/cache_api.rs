@@ -3,11 +3,13 @@ use std::hash::Hash;
 use futures::Future;
 use thiserror::Error;
 use crate::internal_cache::{CacheAction, InternalCacheStore, CacheMessage};
-use crate::backing::{CacheBacking, HashMapBacking};
+use crate::backing::{BackingError, CacheBacking, HashMapBacking};
 use std::fmt::Debug;
 
 #[derive(Error, Debug)]
 pub enum CacheLoadingError<E: Debug> {
+    #[error(transparent)]
+    BackingError(BackingError),
     #[error(transparent)]
     CommunicationError(CacheCommunicationError),
     #[error("No data found")]
@@ -75,6 +77,7 @@ pub enum CacheEntry<V, E: Debug> {
 
 #[derive(Debug)]
 pub enum CacheResult<V, E: Debug> {
+    Error(BackingError),
     Found(V),
     Loading(JoinHandle<Result<V, CacheLoadingError<E>>>),
     None,
@@ -82,7 +85,7 @@ pub enum CacheResult<V, E: Debug> {
 
 #[derive(Debug, Clone)]
 pub struct LoadingCache<K, V, E: Debug> {
-    tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E>>
+    tx: tokio::sync::mpsc::Sender<CacheMessage<K, V, E>>,
 }
 
 impl<
@@ -442,6 +445,9 @@ impl<
                                 }
                             }
                             CacheResult::None => { Ok(None) }
+                            CacheResult::Error(err) => {
+                                Err(CacheLoadingError::BackingError(err))
+                            }
                         }
                     }
                     Err(err) => {

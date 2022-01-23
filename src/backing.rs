@@ -4,6 +4,8 @@ use std::hash::Hash;
 use lru::LruCache;
 #[cfg(feature = "ttl-cache")]
 use std::collections::VecDeque;
+use std::fmt::Debug;
+use thiserror::Error;
 #[cfg(feature = "ttl-cache")]
 use std::ops::Add;
 #[cfg(feature = "ttl-cache")]
@@ -12,14 +14,25 @@ use tokio::time::{Instant, Duration};
 pub trait CacheBacking<K, V>
     where K: Eq + Hash + Sized + Clone + Send,
           V: Sized + Clone + Send {
-    fn get_mut(&mut self, key: &K) -> Option<&mut V>;
-    fn get(&mut self, key: &K) -> Option<&V>;
-    fn set(&mut self, key: K, value: V) -> Option<V>;
-    fn remove(&mut self, key: &K) -> Option<V>;
-    fn contains_key(&self, key: &K) -> bool;
-    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send + 'static>);
-    fn clear(&mut self);
+    type Meta;
+
+    fn get_mut(&mut self, key: &K) -> Result<Option<&mut V>, BackingError>;
+    fn get(&mut self, key: &K) -> Result<Option<&V>, BackingError>;
+    fn set(&mut self, key: K, value: V, meta: Option<Self::Meta>) -> Result<Option<V>, BackingError>;
+    fn remove(&mut self, key: &K) -> Result<Option<V>, BackingError>;
+    fn contains_key(&self, key: &K) -> Result<bool, BackingError>;
+    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send + 'static>) -> Result<(), BackingError>;
+    fn clear(&mut self) -> Result<(), BackingError>;
 }
+
+#[derive(Debug, Clone, Error)]
+pub enum BackingError {
+    #[error(transparent)]
+    TtlError(#[from] TtlError),
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct NoMeta {}
 
 #[cfg(feature = "lru-cache")]
 pub struct LruCacheBacking<K, V> {
@@ -31,27 +44,29 @@ impl<
     K: Eq + Hash + Sized + Clone + Send,
     V: Sized + Clone + Send
 > CacheBacking<K, V> for LruCacheBacking<K, V> {
-    fn get_mut(&mut self, key: &K) -> Option<&mut V> {
-        self.lru.get_mut(key)
+    type Meta = NoMeta;
+
+    fn get_mut(&mut self, key: &K) -> Result<Option<&mut V>, BackingError> {
+        Ok(self.lru.get_mut(key))
     }
 
-    fn get(&mut self, key: &K) -> Option<&V> {
-        self.lru.get(key)
+    fn get(&mut self, key: &K) -> Result<Option<&V>, BackingError> {
+        Ok(self.lru.get(key))
     }
 
-    fn set(&mut self, key: K, value: V) -> Option<V> {
-        self.lru.put(key, value)
+    fn set(&mut self, key: K, value: V, _meta: Option<Self::Meta>) -> Result<Option<V>, BackingError> {
+        Ok(self.lru.put(key, value))
     }
 
-    fn remove(&mut self, key: &K) -> Option<V> {
-        self.lru.pop(key)
+    fn remove(&mut self, key: &K) -> Result<Option<V>, BackingError> {
+        Ok(self.lru.pop(key))
     }
 
-    fn contains_key(&self, key: &K) -> bool {
-        self.lru.contains(&key.clone())
+    fn contains_key(&self, key: &K) -> Result<bool, BackingError> {
+        Ok(self.lru.contains(&key.clone()))
     }
 
-    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send>) {
+    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send>) -> Result<(), BackingError> {
         let keys = self.lru.iter()
             .filter_map(|(key, value)| {
                 if predicate((key, value)) {
@@ -65,10 +80,12 @@ impl<
         for key in keys.into_iter() {
             self.lru.pop(&key);
         }
+        Ok(())
     }
 
-    fn clear(&mut self) {
+    fn clear(&mut self) -> Result<(), BackingError> {
         self.lru.clear();
+        Ok(())
     }
 }
 
@@ -114,51 +131,58 @@ impl<K> From<(K, Instant)> for TTlEntry<K> {
     }
 }
 
+#[derive(Debug, Clone, Error)]
+pub enum TtlError {
+    #[error("The expiry for key not found")]
+    ExpiryNotFound,
+    #[error("No key for expiry matched key")]
+    ExpiryKeyNotFound,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct TtlMeta {
+    pub ttl: Duration
+}
+
 #[cfg(feature = "ttl-cache")]
 impl<
     K: Eq + Hash + Sized + Clone + Send,
     V: Sized + Clone + Send
 > CacheBacking<K, V> for TtlCacheBacking<K, V> {
-    fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+    type Meta = NoMeta;
+
+    fn get_mut(&mut self, key: &K) -> Result<Option<&mut V>, BackingError> {
         self.remove_old();
-        self.map.get_mut(key)
-            .map(|(value, _)| value)
+        Ok(self.map.get_mut(key)
+            .map(|(value, _)| value))
     }
 
-    fn get(&mut self, key: &K) -> Option<&V> {
+    fn get(&mut self, key: &K) -> Result<Option<&V>, BackingError> {
         self.remove_old();
-        self.map.get(key)
-            .map(|(value, _)| value)
+        Ok(self.map.get(key)
+            .map(|(value, _)| value))
     }
 
-    fn set(&mut self, key: K, value: V) -> Option<V> {
+    fn set(&mut self, key: K, value: V, meta: Option<Self::Meta>) -> Result<Option<V>, BackingError> {
         self.remove_old();
         let expiry = Instant::now().add(self.ttl);
-        let result = self.replace(key.clone(), value, expiry);
-        match self.expiry_queue.binary_search_by_key(&expiry, |entry| entry.expiry) {
-            Ok(found) => {
-                self.expiry_queue.insert(found + 1, (key, expiry).into());
-            }
-            Err(idx) => {
-                self.expiry_queue.insert(idx, (key, expiry).into());
-            }
-        }
-        result
+        let result = self.replace(key.clone(), value, expiry)?;
+        Ok(result)
     }
 
-    fn remove(&mut self, key: &K) -> Option<V> {
+    fn remove(&mut self, key: &K) -> Result<Option<V>, BackingError> {
         self.remove_old();
-        self.remove_key(key)
+        Ok(self.remove_key(key)?)
     }
 
-    fn contains_key(&self, key: &K) -> bool {
+    fn contains_key(&self, key: &K) -> Result<bool, BackingError> {
         // we cant clean old keys on this, since the self ref is not mutable :(
-        self.map.get(key)
+        Ok(self.map.get(key)
             .filter(|(_, expiry)| Instant::now().lt(expiry))
-            .is_some()
+            .is_some())
     }
 
-    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send>) {
+    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send>) -> Result<(), BackingError> {
         let keys = self.map.iter()
             .filter_map(|(key, (value, _))| {
                 if predicate((key, value)) {
@@ -174,11 +198,13 @@ impl<
             // optimize looping through expiry_queue multiple times?
             self.expiry_queue.retain(|entry| entry.key.ne(&key))
         }
+        Ok(())
     }
 
-    fn clear(&mut self) {
+    fn clear(&mut self) -> Result<(), BackingError> {
         self.expiry_queue.clear();
         self.map.clear();
+        Ok(())
     }
 }
 
@@ -203,17 +229,26 @@ impl<K: Eq + Hash + Sized + Clone + Send, V: Sized + Clone + Send> TtlCacheBacki
         }
     }
 
-    fn replace(&mut self, key: K, value: V, expiry: Instant) -> Option<V> {
+    fn replace(&mut self, key: K, value: V, expiry: Instant) -> Result<Option<V>, TtlError> {
         let entry = self.map.insert(key.clone(), (value, expiry));
-        self.cleanup_expiry(entry, &key)
+        let res = self.cleanup_expiry(entry, &key);
+        match self.expiry_queue.binary_search_by_key(&expiry, |entry| entry.expiry) {
+            Ok(found) => {
+                self.expiry_queue.insert(found + 1, (key, expiry).into());
+            }
+            Err(idx) => {
+                self.expiry_queue.insert(idx, (key, expiry).into());
+            }
+        }
+        res
     }
 
-    fn remove_key(&mut self, key: &K) -> Option<V> {
+    fn remove_key(&mut self, key: &K) -> Result<Option<V>, TtlError> {
         let entry = self.map.remove(key);
         self.cleanup_expiry(entry, key)
     }
 
-    fn cleanup_expiry(&mut self, entry: Option<(V, Instant)>, key: &K) -> Option<V> {
+    fn cleanup_expiry(&mut self, entry: Option<(V, Instant)>, key: &K) -> Result<Option<V>, TtlError> {
         if let Some((value, old_expiry)) = entry {
             match self.expiry_queue.binary_search_by_key(&old_expiry, |entry| entry.expiry) {
                 Ok(found) => {
@@ -221,16 +256,16 @@ impl<K: Eq + Hash + Sized + Clone + Send, V: Sized + Clone + Send> TtlCacheBacki
                     if let Some(index) = index {
                         self.expiry_queue.remove(index);
                     } else {
-                        // expiry not found (key)???
+                        return Err(TtlError::ExpiryKeyNotFound);
                     }
                 }
                 Err(_) => {
-                    // expiry not found???
+                    return Err(TtlError::ExpiryNotFound);
                 }
             }
-            Some(value)
+            Ok(Some(value))
         } else {
-            None
+            Ok(None)
         }
     }
 
@@ -274,32 +309,36 @@ impl<
     K: Eq + Hash + Sized + Clone + Send,
     V: Sized + Clone + Send
 > CacheBacking<K, V> for HashMapBacking<K, V> {
-    fn get_mut(&mut self, key: &K) -> Option<&mut V> {
-        self.map.get_mut(key)
+    type Meta = NoMeta;
+
+    fn get_mut(&mut self, key: &K) -> Result<Option<&mut V>, BackingError> {
+        Ok(self.map.get_mut(key))
     }
 
-    fn get(&mut self, key: &K) -> Option<&V> {
-        self.map.get(key)
+    fn get(&mut self, key: &K) -> Result<Option<&V>, BackingError> {
+        Ok(self.map.get(key))
     }
 
-    fn set(&mut self, key: K, value: V) -> Option<V> {
-        self.map.insert(key, value)
+    fn set(&mut self, key: K, value: V, _meta: Option<Self::Meta>) -> Result<Option<V>, BackingError> {
+        Ok(self.map.insert(key, value))
     }
 
-    fn remove(&mut self, key: &K) -> Option<V> {
-        self.map.remove(key)
+    fn remove(&mut self, key: &K) -> Result<Option<V>, BackingError> {
+        Ok(self.map.remove(key))
     }
 
-    fn contains_key(&self, key: &K) -> bool {
-        self.map.contains_key(key)
+    fn contains_key(&self, key: &K) -> Result<bool, BackingError> {
+        Ok(self.map.contains_key(key))
     }
 
-    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send>) {
+    fn remove_if(&mut self, predicate: Box<dyn Fn((&K, &V)) -> bool + Send>) -> Result<(), BackingError> {
         self.map.retain(|k, v| !predicate((k, v)));
+        Ok(())
     }
 
-    fn clear(&mut self) {
+    fn clear(&mut self) -> Result<(), BackingError> {
         self.map.clear();
+        Ok(())
     }
 }
 
