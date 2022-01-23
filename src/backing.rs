@@ -14,7 +14,7 @@ use tokio::time::{Instant, Duration};
 pub trait CacheBacking<K, V>
     where K: Eq + Hash + Sized + Clone + Send,
           V: Sized + Clone + Send {
-    type Meta: Send;
+    type Meta: Clone + Send;
 
     fn get_mut(&mut self, key: &K) -> Result<Option<&mut V>, BackingError>;
     fn get(&mut self, key: &K) -> Result<Option<&V>, BackingError>;
@@ -139,9 +139,17 @@ pub enum TtlError {
     ExpiryKeyNotFound,
 }
 
+#[cfg(feature = "ttl-cache")]
 #[derive(Debug, Copy, Clone)]
 pub struct TtlMeta {
-    pub ttl: Duration
+    pub ttl: Duration,
+}
+
+#[cfg(feature = "ttl-cache")]
+impl From<Duration> for TtlMeta {
+    fn from(ttl: Duration) -> Self {
+        Self { ttl }
+    }
 }
 
 #[cfg(feature = "ttl-cache")]

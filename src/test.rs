@@ -1,8 +1,12 @@
 use std::collections::HashMap;
 use crate::cache_api::{LoadingCache, CacheLoadingError};
+#[cfg(feature = "ttl-cache")]
+use crate::cache_api::WithMeta;
 use tokio::time::Duration;
 use cache_loader_async_macros::test_with_features;
 use crate::backing::HashMapBacking;
+#[cfg(feature = "ttl-cache")]
+use crate::backing::TtlMeta;
 #[cfg(feature = "lru-cache")]
 use crate::backing::LruCacheBacking;
 #[cfg(feature = "ttl-cache")]
@@ -52,6 +56,31 @@ async fn test_load() {
 
     assert_eq!(result_one, 32);
     assert_eq!(result_two, "buzz".to_owned());
+}
+
+#[cfg(feature = "ttl-cache")]
+#[tokio::test]
+async fn test_ttl_load_meta() {
+    let cache: LoadingCache<String, String, u8, _> =
+        LoadingCache::with_meta_loader(TtlCacheBacking::new(Duration::from_secs(1)), move |key: String| {
+        async move {
+            if key.len() < 5 {
+                Ok(key.to_lowercase())
+                    .with_meta(Some(TtlMeta::from(Duration::from_secs(5))))
+            } else {
+                Ok(key.to_lowercase())
+                    .with_meta(None)
+            }
+        }
+    });
+
+    assert_eq!(cache.get("a".to_owned()).await.unwrap(), "a".to_owned());
+    assert_eq!(cache.get("bbbbb".to_owned()).await.unwrap(), "bbbbb".to_owned());
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    assert!(cache.exists("a".to_owned()).await.unwrap());
+    assert!(!cache.exists("bbbbb".to_owned()).await.unwrap());
 }
 
 test_with_features! {

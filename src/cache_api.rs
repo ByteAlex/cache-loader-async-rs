@@ -109,6 +109,71 @@ impl<
     }
 }
 
+pub struct DataWithMeta<
+    K: Eq + Hash + Clone + Send,
+    V: Clone + Sized + Send,
+    E: Clone + Sized + Send + Debug,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> {
+    pub(crate) data: V,
+    pub(crate) meta: Option<B::Meta>,
+}
+
+// Since the B trait is not cloneable itself, we also need to manually implement Clone here.
+impl<
+    K: Eq + Hash + Clone + Send,
+    V: Clone + Sized + Send,
+    E: Clone + Sized + Send + Debug,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> Clone for DataWithMeta<K, V, E, B> {
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            meta: self.meta.clone(),
+        }
+    }
+}
+
+impl<
+    K: Eq + Hash + Clone + Send,
+    V: Clone + Sized + Send,
+    E: Clone + Sized + Send + Debug,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> DataWithMeta<K, V, E, B> {
+
+    pub fn new(data: V, meta: Option<B::Meta>) -> Self {
+        Self { data, meta }
+    }
+}
+
+pub trait WithMeta<
+    K: Eq + Hash + Clone + Send,
+    V: Clone + Sized + Send,
+    E: Clone + Sized + Send + Debug,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> {
+    type Type;
+
+    fn with_meta(self, meta: Option<B::Meta>) -> Self::Type;
+}
+
+impl<
+    K: Eq + Hash + Clone + Send,
+    V: Clone + Sized + Send,
+    E: Clone + Sized + Send + Debug,
+    B: CacheBacking<K, CacheEntry<V, E>>
+> WithMeta<K, V, E, B> for Result<V, E> {
+
+    type Type = Result<DataWithMeta<K, V, E, B>, E>;
+
+    fn with_meta(self, meta: Option<B::Meta>) -> Self::Type {
+        match self {
+            Ok(data) => Ok(DataWithMeta::new(data, meta)),
+            Err(err) => Err(err),
+        }
+    }
+}
+
 impl<
     K: Eq + Hash + Clone + Send + 'static,
     V: Clone + Sized + Send + 'static,
@@ -169,7 +234,7 @@ impl<
     /// # Arguments
     ///
     /// * `backing` - The custom backing which the cache should use
-    /// * `loader` - A function which returns a Future<Output=Option<V>>
+    /// * `loader` - A function which returns a Future<Output=Result<V, E>>
     ///
     /// # Return Value
     ///
@@ -207,6 +272,61 @@ impl<
     /// ```
     pub fn with_backing<T, F>(backing: B, loader: T) -> LoadingCache<K, V, E, B>
         where F: Future<Output=Result<V, E>> + Sized + Send + 'static,
+              T: Fn(K) -> F + Send + 'static {
+        let loader = loader;
+        LoadingCache::with_meta_loader(backing, move |key| {
+            let future = loader(key);
+            async move {
+                future.await.with_meta(None)
+            }
+        })
+    }
+
+    /// Creates a new instance of a LoadingCache with a custom `CacheBacking` and an optional
+    /// `Meta` loader.
+    ///
+    /// # Arguments
+    ///
+    /// * `backing` - The custom backing which the cache should use
+    /// * `loader` - A function which returns a Future<Output=Result<MetaWithData<K, V, E, B>, E>>
+    ///
+    /// # Return Value
+    ///
+    /// This method returns a tuple, with:
+    /// 0 - The instance of the LoadingCache
+    /// 1 - The CacheHandle which is a JoinHandle<()> and represents the task which operates
+    ///     the cache
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cache_loader_async::cache_api::{LoadingCache, WithMeta};
+    /// use std::collections::HashMap;
+    /// use cache_loader_async::backing::HashMapBacking;
+    /// async fn example() {
+    ///     let static_db: HashMap<String, u32> =
+    ///         vec![("foo".into(), 32), ("bar".into(), 64)]
+    ///             .into_iter()
+    ///             .collect();
+    ///
+    ///     let cache = LoadingCache::with_meta_loader(
+    ///         HashMapBacking::new(), // this is the default implementation of `new`
+    ///         move |key: String| {
+    ///             let db_clone = static_db.clone();
+    ///             async move {
+    ///                 db_clone.get(&key).cloned().ok_or(1)
+    ///                     .with_meta(None)
+    ///             }
+    ///         }
+    ///     );
+    ///
+    ///     let result = cache.get("foo".to_owned()).await.unwrap();
+    ///
+    ///     assert_eq!(result, 32);
+    /// }
+    /// ```
+    pub fn with_meta_loader<T, F>(backing: B, loader: T) -> LoadingCache<K, V, E, B>
+        where F: Future<Output=Result<DataWithMeta<K, V, E, B>, E>> + Sized + Send + 'static,
               T: Fn(K) -> F + Send + 'static {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         let store = InternalCacheStore::new(backing, tx.clone(), loader);

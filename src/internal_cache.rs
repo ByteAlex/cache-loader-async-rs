@@ -1,7 +1,7 @@
 use std::hash::Hash;
 use futures::Future;
 use tokio::task::JoinHandle;
-use crate::cache_api::{CacheResult, CacheLoadingError, CacheEntry, CacheCommunicationError};
+use crate::cache_api::{CacheResult, CacheLoadingError, CacheEntry, CacheCommunicationError, DataWithMeta};
 use crate::backing::CacheBacking;
 use std::fmt::Debug;
 
@@ -59,7 +59,7 @@ impl<
     K: Eq + Hash + Clone + Send + 'static,
     V: Clone + Sized + Send + 'static,
     E: Clone + Sized + Send + Debug + 'static,
-    F: Future<Output=Result<V, E>> + Sized + Send + 'static,
+    F: Future<Output=Result<DataWithMeta<K, V, E, B>, E>> + Sized + Send + 'static,
     T: Fn(K) -> F + Send + 'static,
     B: CacheBacking<K, CacheEntry<V, E>> + Send + 'static
 > InternalCacheStore<K, V, T, E, B>
@@ -308,11 +308,13 @@ impl<
             let join_handle = tokio::spawn(async move {
                 match loader.await {
                     Ok(value) => {
+                        let meta = value.meta;
+                        let value = value.data;
                         inner_tx.send(Ok(value.clone())).ok();
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         let send_value = value.clone();
                         cache_tx.send(CacheMessage {
-                            action: CacheAction::SetAndUnblock(inner_key, send_value, None),
+                            action: CacheAction::SetAndUnblock(inner_key, send_value, meta),
                             response: tx,
                         }).await.ok();
                         rx.await.ok(); // await cache confirmation
