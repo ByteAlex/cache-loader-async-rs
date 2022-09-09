@@ -1,3 +1,7 @@
+# v0.2.1
+Changed:
+* Upgraded lru dependency to fix a security vulnerability. [PR](https://github.com/ZeroTwo-Bot/cache-loader-async-rs/pull/15)
+
 # v0.2.0
 New/Changed:
 * TTL Backing now uses fewer iterations through the entire list
